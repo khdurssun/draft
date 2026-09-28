@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { 
-  Pencil, Eraser, PaintBucket, Hand, Undo2, Redo2, Menu, Download, X, 
+import {
+  Pencil, Eraser, PaintBucket, Hand, Undo2, Redo2, Menu, Download, X,
   Minus, Square, Circle, Sun, Moon, Trash2, Triangle, ChevronRight
 } from 'lucide-react';
 
@@ -46,179 +46,144 @@ const SHAPE_TOOLS: { id: ShapeTool; label: string; Icon: React.ComponentType<{ c
 ];
 
 const hexToRgb = (hex: string) => {
-  const cleanHex = hex.replace('#', '');
-  if (cleanHex.length === 3) {
-    return {
-      r: parseInt(cleanHex[0] + cleanHex[0], 16),
-      g: parseInt(cleanHex[1] + cleanHex[1], 16),
-      b: parseInt(cleanHex[2] + cleanHex[2], 16)
-    };
-  }
-  if (cleanHex.length === 6) {
-    return {
-      r: parseInt(cleanHex.substring(0, 2), 16),
-      g: parseInt(cleanHex.substring(2, 4), 16),
-      b: parseInt(cleanHex.substring(4, 6), 16)
-    };
-  }
+  const h = hex.replace('#', '');
+  if (h.length === 3) return { r: parseInt(h[0]+h[0],16), g: parseInt(h[1]+h[1],16), b: parseInt(h[2]+h[2],16) };
+  if (h.length === 6) return { r: parseInt(h.slice(0,2),16), g: parseInt(h.slice(2,4),16), b: parseInt(h.slice(4,6),16) };
   return null;
 };
 
 const rgbToHex = (r: number, g: number, b: number) => {
-  const toHex = (c: number) => {
-    const hex = Math.max(0, Math.min(255, Math.round(c))).toString(16);
-    return hex.length === 1 ? '0' + hex : hex;
-  };
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  const f = (c: number) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0');
+  return `#${f(r)}${f(g)}${f(b)}`;
 };
 
 const rgbToHsv = (r: number, g: number, b: number) => {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  r/=255; g/=255; b/=255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  const d = max - min;
   let h = 0;
   const v = max;
-  const d = max - min;
   const s = max === 0 ? 0 : d / max;
-  if (max !== min) {
-    switch (max) {
-      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-      case g: h = (b - r) / d + 2; break;
-      case b: h = (r - g) / d + 4; break;
-    }
+  if (d !== 0) {
+    if (max === r) h = ((g-b)/d + (g<b?6:0));
+    else if (max === g) h = (b-r)/d + 2;
+    else h = (r-g)/d + 4;
     h /= 6;
   }
-  return { h: h * 360, s: s * 100, v: v * 100 };
+  return { h: h*360, s: s*100, v: v*100 };
 };
 
 const hsvToRgb = (h: number, s: number, v: number) => {
-  h = (h % 360 + 360) % 360 / 360;
+  h = ((h%360)+360)%360 / 360;
   s = Math.max(0, Math.min(100, s)) / 100;
   v = Math.max(0, Math.min(100, v)) / 100;
-  const i = Math.floor(h * 6);
-  const f = h * 6 - i;
-  const p = v * (1 - s);
-  const q = v * (1 - f * s);
-  const t = v * (1 - (1 - f) * s);
-  let r = 0, g = 0, b = 0;
-  switch (i % 6) {
-    case 0: r = v; g = t; b = p; break;
-    case 1: r = q; g = v; b = p; break;
-    case 2: r = p; g = v; b = t; break;
-    case 3: r = p; g = q; b = v; break;
-    case 4: r = t; g = p; b = v; break;
-    case 5: r = v; g = p; b = q; break;
+  const i = Math.floor(h*6);
+  const f = h*6 - i;
+  const p = v*(1-s);
+  const q = v*(1-f*s);
+  const t = v*(1-(1-f)*s);
+  let r=0,g=0,b=0;
+  switch (i%6) {
+    case 0: r=v; g=t; b=p; break;
+    case 1: r=q; g=v; b=p; break;
+    case 2: r=p; g=v; b=t; break;
+    case 3: r=p; g=q; b=v; break;
+    case 4: r=t; g=p; b=v; break;
+    case 5: r=v; g=p; b=q; break;
   }
-  return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+  return { r: Math.round(r*255), g: Math.round(g*255), b: Math.round(b*255) };
 };
 
-function executeFloodFill(
+function floodFill(
   ctx: CanvasRenderingContext2D,
-  startX: number,
-  startY: number,
+  sx: number, sy: number,
   fillColor: string,
-  width: number,
-  height: number
+  W: number, H: number
 ) {
-  startX = Math.round(startX);
-  startY = Math.round(startY);
-  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return;
+  sx = Math.round(sx); sy = Math.round(sy);
+  if (sx < 0 || sx >= W || sy < 0 || sy >= H) return;
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+  const target = hexToRgb(fillColor);
+  if (!target) return;
 
-  const imgData = ctx.getImageData(0, 0, width, height);
-  const data = imgData.data;
-  const targetRgb = hexToRgb(fillColor);
-  if (!targetRgb) return;
+  const sp = (sy * W + sx) * 4;
+  const sR = d[sp], sG = d[sp+1], sB = d[sp+2], sA = d[sp+3];
 
-  const startPos = (startY * width + startX) * 4;
-  const startR = data[startPos];
-  const startG = data[startPos + 1];
-  const startB = data[startPos + 2];
-  const startA = data[startPos + 3];
+  if (sR === target.r && sG === target.g && sB === target.b && sA === 255) return;
 
-  if (startR === targetRgb.r && startG === targetRgb.g && startB === targetRgb.b && startA === 255) return;
+  const TOL = 32;
+  const match = (pos: number) =>
+    Math.abs(d[pos]-sR) <= TOL &&
+    Math.abs(d[pos+1]-sG) <= TOL &&
+    Math.abs(d[pos+2]-sB) <= TOL &&
+    Math.abs(d[pos+3]-sA) <= TOL;
 
-  const TOLERANCE = 32;
-  const colorMatch = (pos: number) =>
-    Math.abs(data[pos] - startR) <= TOLERANCE &&
-    Math.abs(data[pos + 1] - startG) <= TOLERANCE &&
-    Math.abs(data[pos + 2] - startB) <= TOLERANCE &&
-    Math.abs(data[pos + 3] - startA) <= TOLERANCE;
+  const stack: number[] = [sx, sy];
+  const visited = new Uint8Array(W * H);
 
-  const pixelStack: number[] = [startX, startY];
-  const visited = new Uint8Array(width * height);
-
-  while (pixelStack.length > 0) {
-    const y = pixelStack.pop()!;
-    const x = pixelStack.pop()!;
-    let currentX = x;
-    while (currentX >= 0 && !visited[currentX + y * width] && colorMatch((y * width + currentX) * 4)) currentX--;
-    currentX++;
-
+  while (stack.length > 0) {
+    const y = stack.pop()!;
+    const x = stack.pop()!;
+    let cx = x;
+    while (cx >= 0 && !visited[cx + y*W] && match((y*W + cx)*4)) cx--;
+    cx++;
     let spanAbove = false, spanBelow = false;
-    while (currentX < width && !visited[currentX + y * width] && colorMatch((y * width + currentX) * 4)) {
-      const p = (y * width + currentX) * 4;
-      data[p] = targetRgb.r;
-      data[p + 1] = targetRgb.g;
-      data[p + 2] = targetRgb.b;
-      data[p + 3] = 255;
-      visited[currentX + y * width] = 1;
-
+    while (cx < W && !visited[cx + y*W] && match((y*W + cx)*4)) {
+      const p = (y*W + cx) * 4;
+      d[p] = target.r; d[p+1] = target.g; d[p+2] = target.b; d[p+3] = 255;
+      visited[cx + y*W] = 1;
       if (y > 0) {
-        const aboveIdx = currentX + (y - 1) * width;
-        const canFillAbove = !visited[aboveIdx] && colorMatch(aboveIdx * 4);
-        if (canFillAbove && !spanAbove) { pixelStack.push(currentX, y - 1); spanAbove = true; }
-        else if (!canFillAbove) spanAbove = false;
+        const ai = cx + (y-1)*W;
+        const ok = !visited[ai] && match(ai*4);
+        if (ok && !spanAbove) { stack.push(cx, y-1); spanAbove = true; }
+        else if (!ok) spanAbove = false;
       }
-      if (y < height - 1) {
-        const belowIdx = currentX + (y + 1) * width;
-        const canFillBelow = !visited[belowIdx] && colorMatch(belowIdx * 4);
-        if (canFillBelow && !spanBelow) { pixelStack.push(currentX, y + 1); spanBelow = true; }
-        else if (!canFillBelow) spanBelow = false;
+      if (y < H-1) {
+        const bi = cx + (y+1)*W;
+        const ok = !visited[bi] && match(bi*4);
+        if (ok && !spanBelow) { stack.push(cx, y+1); spanBelow = true; }
+        else if (!ok) spanBelow = false;
       }
-      currentX++;
+      cx++;
     }
   }
 
-  const HEAL_TOLERANCE = 96;
-  const healPass = new Uint8Array(width * height);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = x + y * width;
-      if (visited[idx] || healPass[idx]) continue;
+  const HT = 96;
+  const heal = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = x + y*W;
+      if (visited[idx] || heal[idx]) continue;
       const p = idx * 4;
-      const r = data[p], g = data[p + 1], b = data[p + 2], a = data[p + 3];
-      const dr = Math.abs(r - startR), dg = Math.abs(g - startG), db = Math.abs(b - startB), da = Math.abs(a - startA);
-      if (dr > HEAL_TOLERANCE || dg > HEAL_TOLERANCE || db > HEAL_TOLERANCE || da > HEAL_TOLERANCE) continue;
-      const isAdjacentToFilled =
-        (x > 0 && visited[x - 1 + y * width]) ||
-        (x < width - 1 && visited[x + 1 + y * width]) ||
-        (y > 0 && visited[x + (y - 1) * width]) ||
-        (y < height - 1 && visited[x + (y + 1) * width]);
-      if (!isAdjacentToFilled) continue;
-      const distToOrig = Math.sqrt(dr * dr + dg * dg + db * db);
-      const maxDist = HEAL_TOLERANCE * Math.sqrt(3);
-      const t = Math.min(1, Math.max(0, distToOrig / maxDist));
-      data[p] = Math.round(r * (1 - t) + targetRgb.r * t);
-      data[p + 1] = Math.round(g * (1 - t) + targetRgb.g * t);
-      data[p + 2] = Math.round(b * (1 - t) + targetRgb.b * t);
-      data[p + 3] = 255;
-      healPass[idx] = 1;
+      const r = d[p], g = d[p+1], b = d[p+2], a = d[p+3];
+      const dr = Math.abs(r-sR), dg = Math.abs(g-sG), db = Math.abs(b-sB), da = Math.abs(a-sA);
+      if (dr > HT || dg > HT || db > HT || da > HT) continue;
+      const adj =
+        (x > 0 && visited[x-1 + y*W]) ||
+        (x < W-1 && visited[x+1 + y*W]) ||
+        (y > 0 && visited[x + (y-1)*W]) ||
+        (y < H-1 && visited[x + (y+1)*W]);
+      if (!adj) continue;
+      const dist = Math.sqrt(dr*dr + dg*dg + db*db);
+      const maxD = HT * Math.sqrt(3);
+      const t = Math.min(1, Math.max(0, dist / maxD));
+      d[p] = Math.round(r*(1-t) + target.r*t);
+      d[p+1] = Math.round(g*(1-t) + target.g*t);
+      d[p+2] = Math.round(b*(1-t) + target.b*t);
+      d[p+3] = 255;
+      heal[idx] = 1;
     }
   }
-
-  ctx.putImageData(imgData, 0, 0);
+  ctx.putImageData(img, 0, 0);
 }
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>('dark');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
-  const [canvasWidth] = useState(794);
-  const [canvasHeight] = useState(1123);
-
-  const [zoom, setZoom] = useState(0.85);
-  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
-  const [cursorPos, setCursorPos] = useState<Point>({ x: 0, y: 0 });
-  const [isHoveringViewport, setIsHoveringViewport] = useState(false);
+  const canvasWidth = 794;
+  const canvasHeight = 1123;
 
   const [activeTool, setActiveTool] = useState<Tool>('pencil');
   const [lastShapeTool, setLastShapeTool] = useState<ShapeTool>('rectangle');
@@ -241,10 +206,7 @@ export default function App() {
   const [redoStack, setRedoStack] = useState<CanvasAction[]>([]);
   const [historyVersion, setHistoryVersion] = useState(0);
 
-  const [isPanning, setIsPanning] = useState(false);
-  const [isSpacePressed, setIsSpacePressed] = useState(false);
-  const [isShiftPressed, setIsShiftPressed] = useState(false);
-  const [isSatValDragging, setIsSatValDragging] = useState(false);
+  const [isSatDragging, setIsSatDragging] = useState(false);
   const [isHueDragging, setIsHueDragging] = useState(false);
 
   const currentStrokeRef = useRef<Point[]>([]);
@@ -255,6 +217,7 @@ export default function App() {
   const panRef = useRef<Point>({ x: 0, y: 0 });
   const panStartRef = useRef<Point>({ x: 0, y: 0 });
   const isPanningRef = useRef(false);
+  const spacePressedRef = useRef(false);
   const activeToolRef = useRef<Tool>('pencil');
   const selectedColorRef = useRef<string>('#1E293B');
   const pencilSizeRef = useRef(4);
@@ -263,17 +226,17 @@ export default function App() {
   const isShapeFilledRef = useRef(false);
   const zoomRef = useRef(0.85);
   const rafRef = useRef<number | null>(null);
+  const hasStrokeRef = useRef(false);
 
-  // Shape menu press-and-hold
   const shapeHoldTimerRef = useRef<number | null>(null);
   const shapePressActiveRef = useRef(false);
   const shapeWasMenuOpenedRef = useRef(false);
   const hoveredShapeRef = useRef<ShapeTool | null>(null);
-  const shapeMenuRef = useRef<HTMLDivElement>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const satValRef = useRef<HTMLCanvasElement>(null);
   const hueRef = useRef<HTMLCanvasElement>(null);
 
@@ -287,104 +250,6 @@ export default function App() {
   useEffect(() => { eraserSizeRef.current = eraserSize; }, [eraserSize]);
   useEffect(() => { shapeSizeRef.current = shapeSize; }, [shapeSize]);
   useEffect(() => { isShapeFilledRef.current = isShapeFilled; }, [isShapeFilled]);
-  useEffect(() => { panRef.current = pan; }, [pan]);
-  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
-  useEffect(() => { shiftPressedRef.current = isShiftPressed; }, [isShiftPressed]);
-
-  const centerCanvasInViewport = useCallback((width: number, height: number) => {
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const scaleX = (rect.width * 0.85) / width;
-      const scaleY = (rect.height * 0.85) / height;
-      const initialZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.2), 1.0);
-      setZoom(initialZoom);
-      zoomRef.current = initialZoom;
-      const newPan = {
-        x: (rect.width - width * initialZoom) / 2,
-        y: Math.max(20, (rect.height - height * initialZoom) / 2)
-      };
-      setPan(newPan);
-      panRef.current = newPan;
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => centerCanvasInViewport(canvasWidth, canvasHeight), 50);
-    return () => clearTimeout(timer);
-  }, [canvasWidth, canvasHeight, centerCanvasInViewport]);
-
-  // Global mouseup — commits shape selection if menu is open
-  useEffect(() => {
-    const handleGlobalMouseUp = () => {
-      if (shapeHoldTimerRef.current !== null) {
-        window.clearTimeout(shapeHoldTimerRef.current);
-        shapeHoldTimerRef.current = null;
-      }
-
-      if (shapeWasMenuOpenedRef.current) {
-        // Menu was open — apply hovered shape if any
-        if (hoveredShapeRef.current) {
-          setActiveTool(hoveredShapeRef.current);
-          activeToolRef.current = hoveredShapeRef.current;
-          setLastShapeTool(hoveredShapeRef.current);
-        }
-        setIsShapeMenuOpen(false);
-        setHoveredShape(null);
-        hoveredShapeRef.current = null;
-        shapeWasMenuOpenedRef.current = false;
-      } else if (shapePressActiveRef.current) {
-        // Short click — use last shape tool
-        setActiveTool(lastShapeTool);
-        activeToolRef.current = lastShapeTool;
-      }
-
-      shapePressActiveRef.current = false;
-    };
-
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
-  }, [lastShapeTool]);
-
-  const updateFromHsv = useCallback((newHsv: { h: number; s: number; v: number }) => {
-    setHsv(newHsv);
-    const { r, g, b } = hsvToRgb(newHsv.h, newHsv.s, newHsv.v);
-    const hex = rgbToHex(r, g, b);
-    setSelectedColor(hex);
-    selectedColorRef.current = hex;
-    setHexInput(hex);
-    setRgbInput({ r: r.toString(), g: g.toString(), b: b.toString() });
-  }, []);
-
-  const handleHexInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setHexInput(val);
-    if (/^#?[0-9A-Fa-f]{6}$/.test(val)) {
-      const formattedHex = val.startsWith('#') ? val : `#${val}`;
-      const rgb = hexToRgb(formattedHex);
-      if (rgb) {
-        setSelectedColor(formattedHex);
-        selectedColorRef.current = formattedHex;
-        setRgbInput({ r: rgb.r.toString(), g: rgb.g.toString(), b: rgb.b.toString() });
-        setHsv(rgbToHsv(rgb.r, rgb.g, rgb.b));
-      }
-    }
-  };
-
-  const handleRgbInputChange = (channel: 'r' | 'g' | 'b', val: string) => {
-    const newRgbInput = { ...rgbInput, [channel]: val };
-    setRgbInput(newRgbInput);
-    const rNum = parseInt(newRgbInput.r, 10);
-    const gNum = parseInt(newRgbInput.g, 10);
-    const bNum = parseInt(newRgbInput.b, 10);
-    if (!isNaN(rNum) && !isNaN(gNum) && !isNaN(bNum) &&
-        rNum >= 0 && rNum <= 255 && gNum >= 0 && gNum <= 255 && bNum >= 0 && bNum <= 255) {
-      const hex = rgbToHex(rNum, gNum, bNum);
-      setSelectedColor(hex);
-      selectedColorRef.current = hex;
-      setHexInput(hex);
-      setHsv(rgbToHsv(rNum, gNum, bNum));
-    }
-  };
 
   const drawShape = (
     ctx: CanvasRenderingContext2D,
@@ -403,9 +268,9 @@ export default function App() {
     let dy = end.y - start.y;
 
     if (snapShift && (tool === 'rectangle' || tool === 'circle' || tool === 'triangle')) {
-      const maxSide = Math.max(Math.abs(dx), Math.abs(dy));
-      dx = dx >= 0 ? maxSide : -maxSide;
-      dy = dy >= 0 ? maxSide : -maxSide;
+      const m = Math.max(Math.abs(dx), Math.abs(dy));
+      dx = dx >= 0 ? m : -m;
+      dy = dy >= 0 ? m : -m;
     }
 
     if (tool === 'line') {
@@ -415,31 +280,24 @@ export default function App() {
     } else if (tool === 'rectangle') {
       const x = dx < 0 ? start.x + dx : start.x;
       const y = dy < 0 ? start.y + dy : start.y;
-      const w = Math.abs(dx);
-      const h = Math.abs(dy);
-      if (isFilled) ctx.fillRect(x, y, w, h);
-      else ctx.strokeRect(x, y, w, h);
+      const w = Math.abs(dx), h = Math.abs(dy);
+      if (isFilled) ctx.fillRect(x, y, w, h); else ctx.strokeRect(x, y, w, h);
     } else if (tool === 'circle') {
-      const rx = Math.abs(dx) / 2;
-      const ry = Math.abs(dy) / 2;
-      const cx = start.x + dx / 2;
-      const cy = start.y + dy / 2;
+      const rx = Math.abs(dx)/2, ry = Math.abs(dy)/2;
+      const cx = start.x + dx/2, cy = start.y + dy/2;
       ctx.beginPath();
-      ctx.ellipse(cx, cy, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
-      if (isFilled) ctx.fill();
-      else ctx.stroke();
+      ctx.ellipse(cx, cy, Math.max(1,rx), Math.max(1,ry), 0, 0, Math.PI*2);
+      if (isFilled) ctx.fill(); else ctx.stroke();
     } else if (tool === 'triangle') {
       const x = dx < 0 ? start.x + dx : start.x;
       const y = dy < 0 ? start.y + dy : start.y;
-      const w = Math.abs(dx);
-      const h = Math.abs(dy);
+      const w = Math.abs(dx), h = Math.abs(dy);
       ctx.beginPath();
-      ctx.moveTo(x + w / 2, y);
+      ctx.moveTo(x + w/2, y);
       ctx.lineTo(x + w, y + h);
       ctx.lineTo(x, y + h);
       ctx.closePath();
-      if (isFilled) ctx.fill();
-      else ctx.stroke();
+      if (isFilled) ctx.fill(); else ctx.stroke();
     }
   };
 
@@ -449,16 +307,11 @@ export default function App() {
       ctx.beginPath();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      if (action.tool === 'eraser') {
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = action.size;
-      } else {
-        ctx.strokeStyle = action.color;
-        ctx.lineWidth = action.size;
-      }
+      ctx.strokeStyle = action.tool === 'eraser' ? '#FFFFFF' : action.color;
+      ctx.fillStyle = ctx.strokeStyle as string;
+      ctx.lineWidth = action.size;
       if (action.points.length === 1) {
-        ctx.arc(action.points[0].x, action.points[0].y, action.size / 2, 0, Math.PI * 2);
-        ctx.fillStyle = action.tool === 'eraser' ? '#FFFFFF' : action.color;
+        ctx.arc(action.points[0].x, action.points[0].y, action.size/2, 0, Math.PI*2);
         ctx.fill();
       } else {
         ctx.moveTo(action.points[0].x, action.points[0].y);
@@ -470,309 +323,307 @@ export default function App() {
     } else if (action.type === 'shape') {
       drawShape(ctx, action.tool, action.start, action.end, action.color, action.size, action.isFilled, !!action.shiftKey);
     } else if (action.type === 'fill') {
-      executeFloodFill(ctx, action.x, action.y, action.color, canvasWidth, canvasHeight);
+      floodFill(ctx, action.x, action.y, action.color, canvasWidth, canvasHeight);
     }
   };
 
-  const redrawBaseCanvas = useCallback(() => {
+  const redrawBase = useCallback(() => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-    for (const action of history) drawAction(ctx, action);
+    for (const a of history) drawAction(ctx, a);
   }, [history, canvasWidth, canvasHeight]);
 
-  useEffect(() => {
-    redrawBaseCanvas();
-  }, [redrawBaseCanvas, historyVersion]);
+  useEffect(() => { redrawBase(); }, [redrawBase, historyVersion]);
 
-  const redrawOverlay = useCallback(() => {
+  const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-
     if (!isMouseDownRef.current) return;
-
     const tool = activeToolRef.current;
-
     if (tool === 'pencil' || tool === 'eraser') {
-      const points = currentStrokeRef.current;
-      if (points.length === 0) return;
+      const pts = currentStrokeRef.current;
+      if (pts.length === 0) return;
       ctx.beginPath();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      const size = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
-      if (tool === 'eraser') {
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = size;
-        ctx.fillStyle = '#FFFFFF';
-      } else {
-        ctx.strokeStyle = selectedColorRef.current;
-        ctx.fillStyle = selectedColorRef.current;
-        ctx.lineWidth = size;
-      }
-      if (points.length === 1) {
-        ctx.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
+      const s = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
+      ctx.strokeStyle = tool === 'eraser' ? '#FFFFFF' : selectedColorRef.current;
+      ctx.fillStyle = ctx.strokeStyle as string;
+      ctx.lineWidth = s;
+      if (pts.length === 1) {
+        ctx.arc(pts[0].x, pts[0].y, s/2, 0, Math.PI*2);
         ctx.fill();
       } else {
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
         ctx.stroke();
       }
     } else if (shapeStartRef.current && isShapeTool(tool)) {
-      drawShape(
-        ctx,
-        tool,
-        shapeStartRef.current,
-        cursorPosRef.current,
-        selectedColorRef.current,
-        shapeSizeRef.current,
-        isShapeFilledRef.current,
-        shiftPressedRef.current
-      );
+      drawShape(ctx, tool, shapeStartRef.current, cursorPosRef.current, selectedColorRef.current, shapeSizeRef.current, isShapeFilledRef.current, shiftPressedRef.current);
     }
   }, [canvasWidth, canvasHeight]);
 
-  const scheduleOverlayRedraw = useCallback(() => {
+  const scheduleOverlay = useCallback(() => {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
-      redrawOverlay();
+      drawOverlay();
     });
-  }, [redrawOverlay]);
+  }, [drawOverlay]);
 
   useEffect(() => {
-    if (activePopover !== 'color' || !satValRef.current || !hueRef.current) return;
-    const satCanvas = satValRef.current;
-    const sCtx = satCanvas.getContext('2d');
-    if (sCtx) {
-      sCtx.fillStyle = `hsl(${hsv.h}, 100%, 50%)`;
-      sCtx.fillRect(0, 0, satCanvas.width, satCanvas.height);
-      const whiteGrad = sCtx.createLinearGradient(0, 0, satCanvas.width, 0);
-      whiteGrad.addColorStop(0, 'rgba(255,255,255,1)');
-      whiteGrad.addColorStop(1, 'rgba(255,255,255,0)');
-      sCtx.fillStyle = whiteGrad;
-      sCtx.fillRect(0, 0, satCanvas.width, satCanvas.height);
-      const blackGrad = sCtx.createLinearGradient(0, 0, 0, satCanvas.height);
-      blackGrad.addColorStop(0, 'rgba(0,0,0,0)');
-      blackGrad.addColorStop(1, 'rgba(0,0,0,1)');
-      sCtx.fillStyle = blackGrad;
-      sCtx.fillRect(0, 0, satCanvas.width, satCanvas.height);
-    }
-    const hueCanvas = hueRef.current;
-    const hCtx = hueCanvas.getContext('2d');
-    if (hCtx) {
-      const grad = hCtx.createLinearGradient(0, 0, hueCanvas.width, 0);
-      grad.addColorStop(0, '#FF0000');
-      grad.addColorStop(0.17, '#FFFF00');
-      grad.addColorStop(0.33, '#00FF00');
-      grad.addColorStop(0.5, '#00FFFF');
-      grad.addColorStop(0.67, '#0000FF');
-      grad.addColorStop(0.83, '#FF00FF');
-      grad.addColorStop(1, '#FF0000');
-      hCtx.fillStyle = grad;
-      hCtx.fillRect(0, 0, hueCanvas.width, hueCanvas.height);
-    }
-  }, [activePopover, hsv.h]);
-
-  const handleSatValMove = useCallback((clientX: number, clientY: number) => {
-    if (!satValRef.current) return;
-    const rect = satValRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
-    const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
-    updateFromHsv({ ...hsv, s: (x / rect.width) * 100, v: (1 - y / rect.height) * 100 });
-  }, [hsv, updateFromHsv]);
-
-  const handleHueMove = useCallback((clientX: number) => {
-    if (!hueRef.current) return;
-    const rect = hueRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
-    updateFromHsv({ ...hsv, h: (x / rect.width) * 360 });
-  }, [hsv, updateFromHsv]);
-
-  useEffect(() => {
-    const up = () => { setIsSatValDragging(false); setIsHueDragging(false); };
+    const up = () => { setIsSatDragging(false); setIsHueDragging(false); };
     const move = (e: MouseEvent) => {
-      if (isSatValDragging) handleSatValMove(e.clientX, e.clientY);
-      if (isHueDragging) handleHueMove(e.clientX);
+      if (isSatDragging && satValRef.current) {
+        const r = satValRef.current.getBoundingClientRect();
+        const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+        const y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+        updateFromHsv({ ...hsv, s: (x/r.width)*100, v: (1 - y/r.height)*100 });
+      }
+      if (isHueDragging && hueRef.current) {
+        const r = hueRef.current.getBoundingClientRect();
+        const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+        updateFromHsv({ ...hsv, h: (x/r.width)*360 });
+      }
     };
     window.addEventListener('mouseup', up);
     window.addEventListener('mousemove', move);
-    return () => {
-      window.removeEventListener('mouseup', up);
-      window.removeEventListener('mousemove', move);
-    };
-  }, [isSatValDragging, isHueDragging, handleSatValMove, handleHueMove]);
+    return () => { window.removeEventListener('mouseup', up); window.removeEventListener('mousemove', move); };
+  }, [isSatDragging, isHueDragging, hsv]);
 
-  const handleUndo = useCallback(() => {
-    setHistory((prev) => {
-      if (prev.length === 0) return prev;
-      const newHistory = [...prev];
-      const last = newHistory.pop()!;
-      setRedoStack((r) => [...r, last]);
-      return newHistory;
-    });
-    setHistoryVersion((v) => v + 1);
+  const updateFromHsv = useCallback((n: { h:number; s:number; v:number }) => {
+    setHsv(n);
+    const { r, g, b } = hsvToRgb(n.h, n.s, n.v);
+    const hex = rgbToHex(r, g, b);
+    setSelectedColor(hex);
+    selectedColorRef.current = hex;
+    setHexInput(hex);
+    setRgbInput({ r: String(r), g: String(g), b: String(b) });
   }, []);
 
-  const handleRedo = useCallback(() => {
-    setRedoStack((prev) => {
-      if (prev.length === 0) return prev;
-      const newRedo = [...prev];
-      const action = newRedo.pop()!;
-      setHistory((h) => [...h, action]);
-      return newRedo;
+  const handleHex = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setHexInput(v);
+    if (/^#?[0-9A-Fa-f]{6}$/.test(v)) {
+      const hex = v.startsWith('#') ? v : `#${v}`;
+      const rgb = hexToRgb(hex);
+      if (rgb) {
+        setSelectedColor(hex);
+        selectedColorRef.current = hex;
+        setRgbInput({ r: String(rgb.r), g: String(rgb.g), b: String(rgb.b) });
+        setHsv(rgbToHsv(rgb.r, rgb.g, rgb.b));
+      }
+    }
+  };
+
+  const handleRgb = (ch: 'r'|'g'|'b', v: string) => {
+    const ni = { ...rgbInput, [ch]: v };
+    setRgbInput(ni);
+    const r = parseInt(ni.r), g = parseInt(ni.g), b = parseInt(ni.b);
+    if (!isNaN(r) && !isNaN(g) && !isNaN(b) && r>=0 && r<=255 && g>=0 && g<=255 && b>=0 && b<=255) {
+      const hex = rgbToHex(r,g,b);
+      setSelectedColor(hex);
+      selectedColorRef.current = hex;
+      setHexInput(hex);
+      setHsv(rgbToHsv(r,g,b));
+    }
+  };
+
+  useEffect(() => {
+    if (activePopover !== 'color') return;
+    const s = satValRef.current, h = hueRef.current;
+    if (!s || !h) return;
+    const sc = s.getContext('2d');
+    if (sc) {
+      sc.fillStyle = `hsl(${hsv.h}, 100%, 50%)`;
+      sc.fillRect(0, 0, s.width, s.height);
+      const wg = sc.createLinearGradient(0, 0, s.width, 0);
+      wg.addColorStop(0, 'rgba(255,255,255,1)');
+      wg.addColorStop(1, 'rgba(255,255,255,0)');
+      sc.fillStyle = wg;
+      sc.fillRect(0, 0, s.width, s.height);
+      const bg = sc.createLinearGradient(0, 0, 0, s.height);
+      bg.addColorStop(0, 'rgba(0,0,0,0)');
+      bg.addColorStop(1, 'rgba(0,0,0,1)');
+      sc.fillStyle = bg;
+      sc.fillRect(0, 0, s.width, s.height);
+    }
+    const hc = h.getContext('2d');
+    if (hc) {
+      const g = hc.createLinearGradient(0, 0, h.width, 0);
+      g.addColorStop(0, '#F00'); g.addColorStop(0.17, '#FF0');
+      g.addColorStop(0.33, '#0F0'); g.addColorStop(0.5, '#0FF');
+      g.addColorStop(0.67, '#00F'); g.addColorStop(0.83, '#F0F');
+      g.addColorStop(1, '#F00');
+      hc.fillStyle = g;
+      hc.fillRect(0, 0, h.width, h.height);
+    }
+  }, [activePopover, hsv.h]);
+
+  const undo = useCallback(() => {
+    setHistory(p => {
+      if (!p.length) return p;
+      const n = [...p];
+      const last = n.pop()!;
+      setRedoStack(r => [...r, last]);
+      return n;
     });
-    setHistoryVersion((v) => v + 1);
+    setHistoryVersion(v => v + 1);
+  }, []);
+
+  const redo = useCallback(() => {
+    setRedoStack(p => {
+      if (!p.length) return p;
+      const n = [...p];
+      const a = n.pop()!;
+      setHistory(h => [...h, a]);
+      return n;
+    });
+    setHistoryVersion(v => v + 1);
   }, []);
 
   useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
-      if (e.key === 'Shift') setIsShiftPressed(true);
-      if (e.code === 'Space') setIsSpacePressed(true);
+    const kd = (e: KeyboardEvent) => {
+      if (['INPUT','TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.key === 'Shift') shiftPressedRef.current = true;
+      if (e.code === 'Space') spacePressedRef.current = true;
       if (e.key === 'Escape') { setIsDrawerOpen(false); setActivePopover(null); setIsShapeMenuOpen(false); }
-      const isCtrlOrCmd = e.ctrlKey || e.metaKey;
-      const key = e.key.toLowerCase();
-      const code = e.code;
-      if (isCtrlOrCmd) {
-        if ((code === 'KeyZ' || key === 'z' || key === 'я') && !e.shiftKey) {
-          e.preventDefault();
-          handleUndo();
-        } else if ((code === 'KeyY' || key === 'y' || key === 'н') ||
-                   ((code === 'KeyZ' || key === 'z' || key === 'я') && e.shiftKey)) {
-          e.preventDefault();
-          handleRedo();
-        }
+      const ctrl = e.ctrlKey || e.metaKey;
+      const code = e.code, key = e.key.toLowerCase();
+      if (ctrl) {
+        if ((code === 'KeyZ' || key === 'z' || key === 'я') && !e.shiftKey) { e.preventDefault(); undo(); }
+        else if ((code === 'KeyY' || key === 'y' || key === 'н') || ((code === 'KeyZ' || key === 'z' || key === 'я') && e.shiftKey)) { e.preventDefault(); redo(); }
       }
     };
-    const up = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') setIsShiftPressed(false);
-      if (e.code === 'Space') setIsSpacePressed(false);
+    const ku = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') shiftPressedRef.current = false;
+      if (e.code === 'Space') spacePressedRef.current = false;
     };
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    return () => {
-      window.removeEventListener('keydown', down);
-      window.removeEventListener('keyup', up);
-    };
-  }, [handleUndo, handleRedo]);
+    window.addEventListener('keydown', kd);
+    window.addEventListener('keyup', ku);
+    return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); };
+  }, [undo, redo]);
 
-  const getCanvasCoordinates = useCallback((clientX: number, clientY: number): Point => {
+  const getCanvasPt = useCallback((cx: number, cy: number): Point => {
     if (!containerRef.current) return { x: 0, y: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left - panRef.current.x) / zoomRef.current,
-      y: (clientY - rect.top - panRef.current.y) / zoomRef.current
-    };
+    const r = containerRef.current.getBoundingClientRect();
+    return { x: (cx - r.left - panRef.current.x) / zoomRef.current, y: (cy - r.top - panRef.current.y) / zoomRef.current };
   }, []);
 
-  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
-    const newZoom = Math.max(0.15, Math.min(5.0, zoomRef.current * zoomFactor));
+    const factor = e.deltaY < 0 ? 1.08 : 0.92;
+    const nz = Math.max(0.15, Math.min(5, zoomRef.current * factor));
     if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    const newPan = {
-      x: mouseX - (mouseX - panRef.current.x) * (newZoom / zoomRef.current),
-      y: mouseY - (mouseY - panRef.current.y) * (newZoom / zoomRef.current)
+    const r = containerRef.current.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const np = {
+      x: mx - (mx - panRef.current.x) * (nz / zoomRef.current),
+      y: my - (my - panRef.current.y) * (nz / zoomRef.current)
     };
-    panRef.current = newPan;
-    zoomRef.current = newZoom;
-    setPan(newPan);
-    setZoom(newZoom);
+    panRef.current = np;
+    zoomRef.current = nz;
+    if (canvasWrapperRef.current) {
+      canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${nz})`;
+    }
   };
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    const isMiddleClick = e.button === 1;
+  const onDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    const isMiddle = e.button === 1;
     const tool = activeToolRef.current;
-    const isHandMode = tool === 'hand' || isSpacePressed || isMiddleClick;
+    const handMode = tool === 'hand' || spacePressedRef.current || isMiddle;
 
-    if (isHandMode) {
+    if (handMode) {
       e.preventDefault();
-      setIsPanning(true);
       isPanningRef.current = true;
       panStartRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+      if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
       return;
     }
     if (e.button !== 0) return;
 
-    const pt = getCanvasCoordinates(e.clientX, e.clientY);
+    const pt = getCanvasPt(e.clientX, e.clientY);
     isMouseDownRef.current = true;
 
     if (tool === 'pencil' || tool === 'eraser') {
       currentStrokeRef.current = [pt];
-      scheduleOverlayRedraw();
+      hasStrokeRef.current = true;
+      scheduleOverlay();
     } else if (isShapeTool(tool)) {
       shapeStartRef.current = pt;
       cursorPosRef.current = pt;
-      scheduleOverlayRedraw();
+      scheduleOverlay();
     } else if (tool === 'bucket') {
-      const baseCanvas = baseCanvasRef.current;
-      if (!baseCanvas) return;
-      const ctx = baseCanvas.getContext('2d');
+      const c = baseCanvasRef.current;
+      if (!c) return;
+      const ctx = c.getContext('2d');
       if (!ctx) return;
-      executeFloodFill(ctx, Math.round(pt.x), Math.round(pt.y), selectedColorRef.current, canvasWidth, canvasHeight);
-      setHistory((prev) => {
-        const next = [...prev, { type: 'fill', x: Math.round(pt.x), y: Math.round(pt.y), color: selectedColorRef.current } as FillAction];
-        return next;
-      });
+      floodFill(ctx, pt.x, pt.y, selectedColorRef.current, canvasWidth, canvasHeight);
+      setHistory(p => [...p, { type: 'fill', x: Math.round(pt.x), y: Math.round(pt.y), color: selectedColorRef.current }]);
       setRedoStack([]);
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const pt = getCanvasCoordinates(e.clientX, e.clientY);
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const pt = getCanvasPt(e.clientX, e.clientY);
     cursorPosRef.current = pt;
-    setCursorPos(pt);
 
     if (isPanningRef.current) {
-      const newPan = { x: e.clientX - panStartRef.current.x, y: e.clientY - panStartRef.current.y };
-      panRef.current = newPan;
-      setPan(newPan);
+      const np = { x: e.clientX - panStartRef.current.x, y: e.clientY - panStartRef.current.y };
+      panRef.current = np;
+      if (canvasWrapperRef.current) {
+        canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${zoomRef.current})`;
+      }
       return;
     }
 
     const tool = activeToolRef.current;
     if (isMouseDownRef.current && (tool === 'pencil' || tool === 'eraser')) {
       currentStrokeRef.current.push(pt);
-      scheduleOverlayRedraw();
+      scheduleOverlay();
     } else if (isMouseDownRef.current && shapeStartRef.current) {
-      scheduleOverlayRedraw();
+      scheduleOverlay();
+    }
+    // update cursor ring position without state
+    const ring = document.getElementById('cursor-ring');
+    if (ring) {
+      ring.style.left = pt.x + 'px';
+      ring.style.top = pt.y + 'px';
     }
   };
 
-  const handleMouseUp = () => {
+  const onUp = () => {
     if (isPanningRef.current) {
       isPanningRef.current = false;
-      setIsPanning(false);
+      if (containerRef.current) containerRef.current.style.cursor = '';
       return;
     }
-
     if (!isMouseDownRef.current) return;
     const tool = activeToolRef.current;
 
     if (tool === 'pencil' || tool === 'eraser') {
       if (currentStrokeRef.current.length > 0) {
-        const newStroke: FreehandStroke = {
+        const s: FreehandStroke = {
           type: 'stroke',
           tool,
           points: [...currentStrokeRef.current],
           color: selectedColorRef.current,
           size: tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current
         };
-        const baseCanvas = baseCanvasRef.current;
-        if (baseCanvas) {
-          const ctx = baseCanvas.getContext('2d');
+        const c = baseCanvasRef.current;
+        if (c) {
+          const ctx = c.getContext('2d');
           if (ctx) {
+            ctx.beginPath();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
             if (tool === 'eraser') {
               ctx.strokeStyle = '#FFFFFF';
               ctx.fillStyle = '#FFFFFF';
@@ -782,25 +633,21 @@ export default function App() {
               ctx.fillStyle = selectedColorRef.current;
               ctx.lineWidth = pencilSizeRef.current;
             }
-            ctx.beginPath();
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            const points = newStroke.points;
-            if (points.length === 1) {
-              ctx.arc(points[0].x, points[0].y, newStroke.size / 2, 0, Math.PI * 2);
+            if (s.points.length === 1) {
+              ctx.arc(s.points[0].x, s.points[0].y, s.size/2, 0, Math.PI*2);
               ctx.fill();
             } else {
-              ctx.moveTo(points[0].x, points[0].y);
-              for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+              ctx.moveTo(s.points[0].x, s.points[0].y);
+              for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
               ctx.stroke();
             }
           }
         }
-        setHistory((prev) => [...prev, newStroke]);
+        setHistory(p => [...p, s]);
         setRedoStack([]);
       }
     } else if (shapeStartRef.current && isShapeTool(tool)) {
-      const newShape: ShapeAction = {
+      const sh: ShapeAction = {
         type: 'shape',
         tool,
         start: shapeStartRef.current,
@@ -810,65 +657,41 @@ export default function App() {
         isFilled: isShapeFilledRef.current,
         shiftKey: shiftPressedRef.current
       };
-      const baseCanvas = baseCanvasRef.current;
-      if (baseCanvas) {
-        const ctx = baseCanvas.getContext('2d');
-        if (ctx) drawAction(ctx, newShape);
+      const c = baseCanvasRef.current;
+      if (c) {
+        const ctx = c.getContext('2d');
+        if (ctx) drawAction(ctx, sh);
       }
-      setHistory((prev) => [...prev, newShape]);
+      setHistory(p => [...p, sh]);
       setRedoStack([]);
     }
 
     isMouseDownRef.current = false;
     currentStrokeRef.current = [];
     shapeStartRef.current = null;
+    hasStrokeRef.current = false;
 
-    const overlay = overlayCanvasRef.current;
-    if (overlay) {
-      const ctx = overlay.getContext('2d');
+    const o = overlayCanvasRef.current;
+    if (o) {
+      const ctx = o.getContext('2d');
       ctx?.clearRect(0, 0, canvasWidth, canvasHeight);
     }
   };
 
-  const exportImage = (format: 'png' | 'jpeg') => {
-    const base = baseCanvasRef.current;
-    if (!base) return;
-    const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = canvasWidth;
-    exportCanvas.height = canvasHeight;
-    const ctx = exportCanvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(base, 0, 0);
+  const exportImg = (fmt: 'png' | 'jpeg') => {
+    const b = baseCanvasRef.current;
+    if (!b) return;
     const link = document.createElement('a');
-    link.download = `draft-${Date.now()}.${format === 'png' ? 'png' : 'jpg'}`;
-    link.href = format === 'png' ? exportCanvas.toDataURL('image/png') : exportCanvas.toDataURL('image/jpeg', 0.92);
+    link.download = `draft-${Date.now()}.${fmt === 'png' ? 'png' : 'jpg'}`;
+    link.href = fmt === 'png' ? b.toDataURL('image/png') : b.toDataURL('image/jpeg', 0.92);
     link.click();
     setIsDrawerOpen(false);
   };
 
-  const handleToolClick = (tool: Tool) => {
-    if (tool === 'pencil' || tool === 'eraser') {
-      if (activeTool === tool) setActivePopover(activePopover === tool ? null : tool);
-      else { setActiveTool(tool); setActivePopover(null); }
-      return;
-    }
-    if (tool === 'bucket' || tool === 'hand') {
-      setActiveTool(tool);
-      setActivePopover(null);
-      return;
-    }
-    // Shape tools handled separately via press-and-hold
-    if (isShapeTool(tool) && !isShapeMenuOpen) {
-      setActivePopover(activePopover === 'shape' ? null : 'shape');
-    }
-  };
-
-  // Shape button: press-and-hold opens the submenu
-  const handleShapeButtonMouseDown = (e: React.MouseEvent) => {
+  const shapeMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     shapePressActiveRef.current = true;
     shapeWasMenuOpenedRef.current = false;
-
     shapeHoldTimerRef.current = window.setTimeout(() => {
       shapeHoldTimerRef.current = null;
       if (shapePressActiveRef.current) {
@@ -879,157 +702,163 @@ export default function App() {
     }, 180);
   };
 
-  const handleShapeItemMouseEnter = (shape: ShapeTool) => {
-    if (!shapeWasMenuOpenedRef.current) return;
-    setHoveredShape(shape);
-    hoveredShapeRef.current = shape;
+  useEffect(() => {
+    const up = () => {
+      if (shapeHoldTimerRef.current !== null) {
+        clearTimeout(shapeHoldTimerRef.current);
+        shapeHoldTimerRef.current = null;
+      }
+      if (shapeWasMenuOpenedRef.current) {
+        if (hoveredShapeRef.current) {
+          const s = hoveredShapeRef.current;
+          setActiveTool(s);
+          activeToolRef.current = s;
+          setLastShapeTool(s);
+        }
+        setIsShapeMenuOpen(false);
+        setHoveredShape(null);
+        hoveredShapeRef.current = null;
+        shapeWasMenuOpenedRef.current = false;
+      } else if (shapePressActiveRef.current) {
+        setActiveTool(lastShapeTool);
+        activeToolRef.current = lastShapeTool;
+      }
+      shapePressActiveRef.current = false;
+    };
+    window.addEventListener('mouseup', up);
+    return () => window.removeEventListener('mouseup', up);
+  }, [lastShapeTool]);
+
+  const toolClick = (t: Tool) => {
+    if (t === 'pencil' || t === 'eraser') {
+      if (activeTool === t) setActivePopover(activePopover === t ? null : t);
+      else { setActiveTool(t); setActivePopover(null); }
+      return;
+    }
+    if (t === 'bucket' || t === 'hand') { setActiveTool(t); setActivePopover(null); return; }
+    if (isShapeTool(t) && !isShapeMenuOpen) {
+      setActivePopover(activePopover === 'shape' ? null : 'shape');
+    }
   };
 
-  const toggleTheme = () => setTheme(isDark ? 'light' : 'dark');
+  const currentShape: ShapeTool = isShapeTool(activeTool) ? activeTool : lastShapeTool;
+  const CurrentShapeIcon = SHAPE_TOOLS.find(s => s.id === currentShape)!.Icon;
 
-  const currentShapeForIcon: ShapeTool = isShapeTool(activeTool) ? activeTool : lastShapeTool;
-  const CurrentShapeIcon = SHAPE_TOOLS.find(s => s.id === currentShapeForIcon)!.Icon;
+  const bg = isDark ? 'bg-zinc-950' : 'bg-zinc-100';
+  const panel = isDark ? 'bg-zinc-900' : 'bg-white';
+  const hover = isDark ? 'hover:bg-zinc-800' : 'hover:bg-zinc-100';
+  const text = isDark ? 'text-zinc-200' : 'text-zinc-800';
+  const muted = isDark ? 'text-zinc-500' : 'text-zinc-400';
+  const border = isDark ? 'border-zinc-800' : 'border-zinc-200';
+  const inputBg = isDark ? 'bg-zinc-950 border-zinc-800' : 'bg-white border-zinc-200';
+  const btnBase = isDark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100';
+  const btnOn = isDark ? 'bg-zinc-800 text-white' : 'bg-zinc-200 text-zinc-900';
 
-  const bgMain = isDark ? 'bg-zinc-950' : 'bg-zinc-100';
-  const bgPanel = isDark ? 'bg-zinc-900' : 'bg-white';
-  const bgPanelHover = isDark ? 'hover:bg-zinc-800' : 'hover:bg-zinc-100';
-  const textMain = isDark ? 'text-neutral-100' : 'text-neutral-900';
-  const textMuted = isDark ? 'text-neutral-500' : 'text-neutral-400';
-  const borderMain = isDark ? 'border-zinc-800' : 'border-zinc-200';
-  const viewportBg = isDark ? 'bg-zinc-900' : 'bg-zinc-200';
-  const inputBg = isDark ? 'bg-zinc-950 border-zinc-800' : 'bg-white border-zinc-300';
-  const toolbarBg = isDark ? 'bg-zinc-900' : 'bg-white';
-  const toolbarBtn = isDark
-    ? 'text-neutral-400 hover:text-neutral-200 hover:bg-zinc-800'
-    : 'text-neutral-500 hover:text-neutral-800 hover:bg-zinc-100';
-  const toolbarBtnActive = isDark
-    ? 'bg-zinc-800 text-white border border-zinc-700'
-    : 'bg-zinc-200 text-neutral-900 border border-zinc-400';
+  // Initialize transform once
+  useEffect(() => {
+    if (containerRef.current && canvasWrapperRef.current) {
+      const r = containerRef.current.getBoundingClientRect();
+      const sx = (r.width * 0.85) / canvasWidth;
+      const sy = (r.height * 0.85) / canvasHeight;
+      const z = Math.min(Math.max(Math.min(sx, sy), 0.2), 1);
+      zoomRef.current = z;
+      const np = {
+        x: (r.width - canvasWidth * z) / 2,
+        y: Math.max(20, (r.height - canvasHeight * z) / 2)
+      };
+      panRef.current = np;
+      canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${z})`;
+    }
+  }, []);
 
   return (
-    <div className={`relative w-screen h-screen ${bgMain} ${textMain} font-sans select-none overflow-hidden`}>
-      
+    <div className={`relative w-screen h-screen ${bg} ${text} font-sans select-none overflow-hidden`}>
+
+      {/* Top-left: menu button */}
       <button
         onClick={() => setIsDrawerOpen(true)}
-        className={`absolute top-4 left-4 z-50 w-10 h-10 ${bgPanel} ${bgPanelHover} rounded-lg border ${borderMain} flex items-center justify-center shadow-lg transition-colors`}
+        className={`absolute top-3 left-3 z-50 w-9 h-9 ${panel} ${hover} rounded-md border ${border} flex items-center justify-center transition-colors`}
       >
-        <Menu className="w-5 h-5" />
+        <Menu className="w-[18px] h-[18px]" strokeWidth={1.8} />
       </button>
 
+      {/* Drawer backdrop */}
       <div
         onClick={() => setIsDrawerOpen(false)}
-        className={`fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm transition-opacity duration-300 ${
-          isDrawerOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
-        }`}
+        className={`fixed inset-0 z-[60] bg-black/40 transition-opacity duration-200 ${isDrawerOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
       />
 
+      {/* Drawer */}
       <aside
-        className={`fixed top-0 left-0 z-[70] h-full w-64 ${bgPanel} border-r ${borderMain} shadow-2xl flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${
-          isDrawerOpen ? 'translate-x-0' : '-translate-x-full'
-        }`}
+        className={`fixed top-0 left-0 z-[70] h-full w-56 ${panel} border-r ${border} flex flex-col transition-transform duration-200 ease-out ${isDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
-        <div className={`flex items-center justify-between px-4 py-4 border-b ${borderMain}`}>
-          <div className="flex items-center gap-2">
-            <div className={`w-8 h-8 rounded-lg ${isDark ? 'bg-white text-zinc-900' : 'bg-zinc-900 text-white'} flex items-center justify-center`}>
-              <Pencil className="w-4 h-4" />
-            </div>
-            <span className="font-semibold text-sm">Draft</span>
-          </div>
+        <div className={`h-12 flex items-center justify-between px-3 border-b ${border}`}>
+          <span className="text-sm font-medium tracking-tight">Draft</span>
           <button
             onClick={() => setIsDrawerOpen(false)}
-            className={`w-8 h-8 rounded-lg ${bgPanelHover} flex items-center justify-center ${textMuted}`}
+            className={`w-7 h-7 rounded-md ${hover} flex items-center justify-center ${muted}`}
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" strokeWidth={1.8} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-0.5">
-          <DrawerItem icon={Download} label="Save PNG" onClick={() => exportImage('png')} isDark={isDark} />
-          <DrawerItem icon={Download} label="Save JPEG" onClick={() => exportImage('jpeg')} isDark={isDark} />
-          <div className={`my-2 border-t ${borderMain}`} />
-          <DrawerItem
-            icon={isDark ? Sun : Moon}
-            label={isDark ? 'Light theme' : 'Dark theme'}
-            onClick={toggleTheme}
-            isDark={isDark}
-          />
-          <DrawerItem
-            icon={Trash2}
-            label="Clear canvas"
-            onClick={() => { setHistory([]); setRedoStack([]); setHistoryVersion(v => v + 1); setIsDrawerOpen(false); }}
-            isDark={isDark}
-            danger
-          />
-        </div>
+        <nav className="flex-1 py-2 px-1.5 flex flex-col gap-0.5">
+          <Row icon={Download} label="PNG" onClick={() => exportImg('png')} />
+          <Row icon={Download} label="JPEG" onClick={() => exportImg('jpeg')} />
+          <div className={`h-px my-1.5 mx-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
+          <Row icon={isDark ? Sun : Moon} label={isDark ? 'Light' : 'Dark'} onClick={() => setTheme(isDark ? 'light' : 'dark')} />
+          <Row icon={Trash2} label="Clear" onClick={() => { setHistory([]); setRedoStack([]); setHistoryVersion(v => v+1); setIsDrawerOpen(false); }} danger />
+        </nav>
 
-        <div className={`px-4 py-3 border-t ${borderMain} text-[10px] font-mono ${textMuted} flex justify-between`}>
+        <div className={`h-9 px-3 border-t ${border} flex items-center justify-between text-[10px] font-mono ${muted}`}>
           <span>{canvasWidth}×{canvasHeight}</span>
-          <span>{Math.round(zoom * 100)}%</span>
+          <span>{Math.round(zoomRef.current * 100)}%</span>
         </div>
       </aside>
 
-      <aside className="absolute top-1/2 -translate-y-1/2 left-4 z-30">
-        <div className={`${toolbarBg} border ${borderMain} rounded-xl p-1.5 shadow-2xl flex flex-col gap-1`}>
+      {/* Toolbar */}
+      <aside className="absolute top-1/2 -translate-y-1/2 left-3 z-30">
+        <div className={`${panel} border ${border} rounded-lg p-1 flex flex-col gap-0.5 shadow-xl`}>
 
           {/* Pencil */}
           <div className="relative">
             <button
-              onClick={() => handleToolClick('pencil')}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${activeTool === 'pencil' ? toolbarBtnActive : toolbarBtn}`}
+              onClick={() => toolClick('pencil')}
+              className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'pencil' ? btnOn : btnBase}`}
             >
-              <Pencil className="w-5 h-5" />
+              <Pencil className="w-[18px] h-[18px]" strokeWidth={1.8} />
             </button>
             {activePopover === 'pencil' && (
-              <Popover borderMain={borderMain} textMuted={textMuted} isDark={isDark}>
-                <div className={`flex justify-between text-xs mb-2 ${textMuted}`}>
-                  <span>Size</span>
-                  <span className="font-mono">{pencilSize}px</span>
-                </div>
-                <input type="range" min="1" max="60" value={pencilSize}
-                  onChange={(e) => setPencilSize(Number(e.target.value))}
-                  className="w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                  style={{ background: isDark ? '#3f3f46' : '#d4d4d8' }}
-                />
+              <Popover isDark={isDark} border={border} muted={muted}>
+                <SliderRow label="Size" value={pencilSize} unit="px" min={1} max={60} onChange={setPencilSize} isDark={isDark} muted={muted} />
               </Popover>
             )}
           </div>
 
-          {/* Shape picker — press-and-hold to open submenu */}
+          {/* Shape */}
           <div className="relative">
             <button
-              onMouseDown={handleShapeButtonMouseDown}
-              className={`relative w-10 h-10 rounded-lg flex items-center justify-center transition-all ${isShapeTool(activeTool) ? toolbarBtnActive : toolbarBtn}`}
-              title="Shape tools (hold to open)"
+              onMouseDown={shapeMouseDown}
+              className={`relative w-9 h-9 rounded-md flex items-center justify-center transition-colors ${isShapeTool(activeTool) ? btnOn : btnBase}`}
             >
-              <CurrentShapeIcon className="w-5 h-5" />
-              <ChevronRight
-                className="absolute bottom-0.5 right-0.5 w-3 h-3 text-white drop-shadow-[0_0_2px_rgba(0,0,0,0.9)]"
-                strokeWidth={3}
-              />
+              <CurrentShapeIcon className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <ChevronRight className="absolute bottom-0.5 right-0.5 w-2.5 h-2.5 text-white drop-shadow-[0_0_1.5px_rgba(0,0,0,0.9)]" strokeWidth={3} />
             </button>
 
-            {/* Shape submenu (opened on hold, selection on hover + release) */}
             {isShapeMenuOpen && (
-              <div
-                ref={shapeMenuRef}
-                className={`absolute left-14 top-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} border ${borderMain} rounded-lg p-1.5 shadow-2xl z-40 flex flex-col gap-0.5`}
-              >
+              <div className={`absolute left-12 top-0 ${panel} border ${border} rounded-md p-1 shadow-xl z-40 flex flex-col gap-0.5 min-w-[110px]`}>
                 {SHAPE_TOOLS.map(({ id, label, Icon }) => {
-                  const isHovered = hoveredShape === id;
-                  const isCurrent = activeTool === id;
+                  const hovered = hoveredShape === id;
+                  const current = activeTool === id;
                   return (
                     <div
                       key={id}
-                      onMouseEnter={() => handleShapeItemMouseEnter(id)}
-                      className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
-                        isHovered
-                          ? 'bg-indigo-500 text-white'
-                          : isCurrent
-                            ? isDark ? 'bg-zinc-800 text-white' : 'bg-zinc-200 text-neutral-900'
-                            : isDark ? 'text-neutral-300' : 'text-neutral-700'
+                      onMouseEnter={() => { setHoveredShape(id); hoveredShapeRef.current = id; }}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer transition-colors ${
+                        hovered ? 'bg-indigo-500 text-white' : current ? btnOn : btnBase
                       }`}
                     >
-                      <Icon className="w-4 h-4" />
+                      <Icon className="w-3.5 h-3.5" strokeWidth={1.8} />
                       <span>{label}</span>
                     </div>
                   );
@@ -1037,24 +866,14 @@ export default function App() {
               </div>
             )}
 
-            {/* Shape settings popover (short-click on active shape) */}
             {activePopover === 'shape' && isShapeTool(activeTool) && !isShapeMenuOpen && (
-              <Popover borderMain={borderMain} textMuted={textMuted} isDark={isDark}>
-                <div className={`flex justify-between text-xs mb-2 ${textMuted}`}>
-                  <span>Line</span>
-                  <span className="font-mono">{shapeSize}px</span>
-                </div>
-                <input type="range" min="1" max="40" value={shapeSize}
-                  onChange={(e) => setShapeSize(Number(e.target.value))}
-                  className="w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                  style={{ background: isDark ? '#3f3f46' : '#d4d4d8' }}
-                />
-                {['rectangle', 'circle', 'triangle'].includes(activeTool) && (
-                  <button onClick={() => setIsShapeFilled(!isShapeFilled)}
-                    className={`mt-3 w-full px-2 py-1.5 rounded text-xs font-medium transition-colors ${
-                      isShapeFilled ? 'bg-indigo-500 text-white'
-                        : isDark ? 'bg-zinc-800 text-neutral-300' : 'bg-zinc-100 text-neutral-700'
-                    }`}>
+              <Popover isDark={isDark} border={border} muted={muted}>
+                <SliderRow label="Line" value={shapeSize} unit="px" min={1} max={40} onChange={setShapeSize} isDark={isDark} muted={muted} />
+                {['rectangle','circle','triangle'].includes(activeTool) && (
+                  <button
+                    onClick={() => setIsShapeFilled(!isShapeFilled)}
+                    className={`mt-2 w-full px-2 py-1 rounded text-[11px] font-medium transition-colors ${isShapeFilled ? 'bg-indigo-500 text-white' : isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-100 text-zinc-700'}`}
+                  >
                     {isShapeFilled ? 'Filled' : 'Outline'}
                   </button>
                 )}
@@ -1064,67 +883,92 @@ export default function App() {
 
           {/* Eraser */}
           <div className="relative">
-            <button onClick={() => handleToolClick('eraser')}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${activeTool === 'eraser' ? toolbarBtnActive : toolbarBtn}`}>
-              <Eraser className="w-5 h-5" />
+            <button
+              onClick={() => toolClick('eraser')}
+              className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'eraser' ? btnOn : btnBase}`}
+            >
+              <Eraser className="w-[18px] h-[18px]" strokeWidth={1.8} />
             </button>
             {activePopover === 'eraser' && (
-              <Popover borderMain={borderMain} textMuted={textMuted} isDark={isDark}>
-                <div className={`flex justify-between text-xs mb-2 ${textMuted}`}>
-                  <span>Size</span>
-                  <span className="font-mono">{eraserSize}px</span>
-                </div>
-                <input type="range" min="4" max="120" value={eraserSize}
-                  onChange={(e) => setEraserSize(Number(e.target.value))}
-                  className="w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                  style={{ background: isDark ? '#3f3f46' : '#d4d4d8' }}
-                />
+              <Popover isDark={isDark} border={border} muted={muted}>
+                <SliderRow label="Size" value={eraserSize} unit="px" min={4} max={120} onChange={setEraserSize} isDark={isDark} muted={muted} />
               </Popover>
             )}
           </div>
 
           {/* Bucket */}
-          <button onClick={() => handleToolClick('bucket')}
-            className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${activeTool === 'bucket' ? toolbarBtnActive : toolbarBtn}`}>
-            <PaintBucket className="w-5 h-5" />
+          <button
+            onClick={() => toolClick('bucket')}
+            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'bucket' ? btnOn : btnBase}`}
+          >
+            <PaintBucket className="w-[18px] h-[18px]" strokeWidth={1.8} />
           </button>
 
           {/* Color */}
           <div className="relative">
             <button
               onClick={() => { setActivePopover(activePopover === 'color' ? null : 'color'); setIsShapeMenuOpen(false); }}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${activePopover === 'color' ? toolbarBtnActive : toolbarBtn}`}
+              className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activePopover === 'color' ? btnOn : btnBase}`}
             >
-              <div className={`w-6 h-6 rounded-md border ${borderMain}`} style={{ backgroundColor: selectedColor }} />
+              <div className={`w-5 h-5 rounded border ${border}`} style={{ backgroundColor: selectedColor }} />
             </button>
             {activePopover === 'color' && (
-              <div className={`absolute left-14 bottom-0 ${bgPanel} border ${borderMain} rounded-xl p-3 shadow-2xl w-60 z-50 flex flex-col gap-3`}>
-                <div className={`relative w-full h-32 rounded-md overflow-hidden border ${borderMain} cursor-crosshair`}>
-                  <canvas ref={satValRef} width={216} height={128}
-                    onMouseDown={(e) => { setIsSatValDragging(true); handleSatValMove(e.clientX, e.clientY); }}
-                    className="w-full h-full block" />
-                  <div className="absolute w-3 h-3 rounded-full border-2 border-white shadow-md pointer-events-none -translate-x-1/2 -translate-y-1/2"
-                    style={{ left: `${hsv.s}%`, top: `${100 - hsv.v}%`, backgroundColor: selectedColor }} />
+              <div className={`absolute left-12 bottom-0 ${panel} border ${border} rounded-md p-2 shadow-xl w-52 z-50 flex flex-col gap-2`}>
+                <div className={`relative w-full h-28 rounded overflow-hidden border ${border} cursor-crosshair`}>
+                  <canvas
+                    ref={satValRef}
+                    width={200} height={112}
+                    onMouseDown={(e) => {
+                      setIsSatDragging(true);
+                      const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+                      const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+                      const y = Math.max(0, Math.min(r.height, e.clientY - r.top));
+                      updateFromHsv({ ...hsv, s: (x/r.width)*100, v: (1-y/r.height)*100 });
+                    }}
+                    className="w-full h-full block"
+                  />
+                  <div
+                    className="absolute w-2.5 h-2.5 rounded-full border-2 border-white shadow pointer-events-none -translate-x-1/2 -translate-y-1/2"
+                    style={{ left: `${hsv.s}%`, top: `${100-hsv.v}%`, backgroundColor: selectedColor }}
+                  />
                 </div>
-                <div className={`relative w-full h-3 rounded-md overflow-hidden border ${borderMain} cursor-pointer`}>
-                  <canvas ref={hueRef} width={216} height={12}
-                    onMouseDown={(e) => { setIsHueDragging(true); handleHueMove(e.clientX); }}
-                    className="w-full h-full block" />
-                  <div className="absolute top-0 bottom-0 w-1.5 border border-white shadow bg-neutral-200 pointer-events-none -translate-x-1/2"
-                    style={{ left: `${(hsv.h / 360) * 100}%` }} />
+                <div className={`relative w-full h-2.5 rounded overflow-hidden border ${border} cursor-pointer`}>
+                  <canvas
+                    ref={hueRef}
+                    width={200} height={10}
+                    onMouseDown={(e) => {
+                      setIsHueDragging(true);
+                      const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+                      const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+                      updateFromHsv({ ...hsv, h: (x/r.width)*360 });
+                    }}
+                    className="w-full h-full block"
+                  />
+                  <div
+                    className="absolute top-0 bottom-0 w-1 border border-white shadow bg-white pointer-events-none -translate-x-1/2"
+                    style={{ left: `${(hsv.h/360)*100}%` }}
+                  />
                 </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className={`w-8 ${textMuted} font-mono`}>HEX</span>
-                  <input type="text" value={hexInput} onChange={handleHexInputChange}
-                    className={`flex-1 ${inputBg} border rounded px-2 py-1 font-mono ${textMain} focus:outline-none focus:border-indigo-500 uppercase`} />
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className={`w-6 ${muted} font-mono`}>HEX</span>
+                  <input
+                    type="text"
+                    value={hexInput}
+                    onChange={handleHex}
+                    className={`flex-1 ${inputBg} border rounded px-1.5 py-0.5 font-mono focus:outline-none focus:border-indigo-500 uppercase text-[11px]`}
+                  />
                 </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className={`w-8 ${textMuted} font-mono`}>RGB</span>
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className={`w-6 ${muted} font-mono`}>RGB</span>
                   <div className="flex gap-1 flex-1">
-                    {(['r', 'g', 'b'] as const).map((ch) => (
-                      <input key={ch} type="text" value={rgbInput[ch]}
-                        onChange={(e) => handleRgbInputChange(ch, e.target.value)}
-                        className={`w-full ${inputBg} border rounded px-1 py-1 text-center font-mono ${textMain} focus:outline-none focus:border-indigo-500`} />
+                    {(['r','g','b'] as const).map(ch => (
+                      <input
+                        key={ch}
+                        type="text"
+                        value={rgbInput[ch]}
+                        onChange={(e) => handleRgb(ch, e.target.value)}
+                        className={`w-full ${inputBg} border rounded px-1 py-0.5 text-center font-mono focus:outline-none focus:border-indigo-500 text-[11px]`}
+                      />
                     ))}
                   </div>
                 </div>
@@ -1133,51 +977,52 @@ export default function App() {
           </div>
 
           {/* Hand */}
-          <button onClick={() => handleToolClick('hand')}
-            className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${activeTool === 'hand' ? toolbarBtnActive : toolbarBtn}`}>
-            <Hand className="w-5 h-5" />
+          <button
+            onClick={() => toolClick('hand')}
+            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'hand' ? btnOn : btnBase}`}
+          >
+            <Hand className="w-[18px] h-[18px]" strokeWidth={1.8} />
           </button>
 
-          <div className={`my-0.5 border-t ${borderMain}`} />
+          <div className={`h-px my-0.5 mx-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
-          <button onClick={handleUndo} disabled={history.length === 0}
-            className={`w-10 h-10 rounded-lg flex items-center justify-center ${toolbarBtn} disabled:opacity-30 disabled:hover:bg-transparent transition-colors`}>
-            <Undo2 className="w-5 h-5" />
+          <button
+            onClick={undo}
+            disabled={!history.length}
+            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${btnBase} disabled:opacity-25 disabled:hover:bg-transparent`}
+          >
+            <Undo2 className="w-[18px] h-[18px]" strokeWidth={1.8} />
           </button>
-          <button onClick={handleRedo} disabled={redoStack.length === 0}
-            className={`w-10 h-10 rounded-lg flex items-center justify-center ${toolbarBtn} disabled:opacity-30 disabled:hover:bg-transparent transition-colors`}>
-            <Redo2 className="w-5 h-5" />
+          <button
+            onClick={redo}
+            disabled={!redoStack.length}
+            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${btnBase} disabled:opacity-25 disabled:hover:bg-transparent`}
+          >
+            <Redo2 className="w-[18px] h-[18px]" strokeWidth={1.8} />
           </button>
         </div>
       </aside>
 
+      {/* Viewport */}
       <main
         ref={containerRef}
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseEnter={() => setIsHoveringViewport(true)}
-        onMouseLeave={() => setIsHoveringViewport(false)}
-        className={`w-full h-full overflow-hidden ${viewportBg} ${
-          isPanning || activeTool === 'hand' || isSpacePressed
-            ? isPanning ? 'cursor-grabbing' : 'cursor-grab'
-            : activeTool === 'eraser' || activeTool === 'pencil' ? 'cursor-none' : 'cursor-crosshair'
-        }`}
+        onWheel={onWheel}
+        onMouseDown={onDown}
+        onMouseMove={onMove}
+        onMouseUp={onUp}
+        className="w-full h-full overflow-hidden bg-zinc-200 dark:bg-zinc-900"
+        style={{ cursor: activeTool === 'hand' ? 'grab' : (activeTool === 'pencil' || activeTool === 'eraser') ? 'none' : 'crosshair' }}
       >
         <div
-          className="absolute origin-top-left will-change-transform"
-          style={{
-            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
-            width: canvasWidth,
-            height: canvasHeight
-          }}
+          ref={canvasWrapperRef}
+          className="absolute top-0 left-0 origin-top-left will-change-transform"
+          style={{ width: canvasWidth, height: canvasHeight }}
         >
           <canvas
             ref={baseCanvasRef}
             width={canvasWidth}
             height={canvasHeight}
-            className={`bg-white block w-full h-full shadow-2xl border ${isDark ? 'border-zinc-800' : 'border-zinc-400/60'}`}
+            className={`block w-full h-full bg-white shadow-2xl ${isDark ? 'border border-zinc-800' : 'border border-zinc-300'}`}
           />
           <canvas
             ref={overlayCanvasRef}
@@ -1186,20 +1031,19 @@ export default function App() {
             className="absolute top-0 left-0 w-full h-full pointer-events-none"
           />
 
-          {activeTool === 'eraser' && isHoveringViewport && !isPanning && (
+          {(activeTool === 'pencil' || activeTool === 'eraser') && (
             <div
-              className="absolute pointer-events-none rounded-full border border-black ring-1 ring-white/90 -translate-x-1/2 -translate-y-1/2"
-              style={{ left: cursorPos.x, top: cursorPos.y, width: eraserSize, height: eraserSize }}
-            />
-          )}
-
-          {activeTool === 'pencil' && isHoveringViewport && !isPanning && (
-            <div
-              className="absolute pointer-events-none rounded-full border border-black ring-1 ring-white/90 -translate-x-1/2 -translate-y-1/2"
+              id="cursor-ring"
+              className={`absolute pointer-events-none rounded-full -translate-x-1/2 -translate-y-1/2 z-20 ${
+                activeTool === 'eraser'
+                  ? 'border border-black ring-1 ring-white/80'
+                  : 'border border-black ring-1 ring-white/80'
+              }`}
               style={{
-                left: cursorPos.x, top: cursorPos.y,
-                width: Math.max(4, pencilSize), height: Math.max(4, pencilSize),
-                backgroundColor: selectedColor
+                width: activeTool === 'eraser' ? eraserSize : Math.max(4, pencilSize),
+                height: activeTool === 'eraser' ? eraserSize : Math.max(4, pencilSize),
+                backgroundColor: activeTool === 'pencil' ? selectedColor : 'transparent',
+                display: 'none'
               }}
             />
           )}
@@ -1209,35 +1053,60 @@ export default function App() {
   );
 }
 
-function Popover({
-  children, isDark, borderMain
+/* ---------- small components ---------- */
+
+function Row({
+  icon: Icon, label, onClick, danger
 }: {
-  children: React.ReactNode; isDark: boolean; borderMain: string; textMuted?: string;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
 }) {
   return (
-    <div className={`absolute left-14 top-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} border ${borderMain} rounded-lg p-3 shadow-2xl w-48 z-40`}>
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[13px] transition-colors ${
+        danger
+          ? 'text-red-400 hover:bg-red-500/10'
+          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 dark:hover:bg-zinc-800'
+      }`}
+    >
+      <Icon className="w-4 h-4" strokeWidth={1.8} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function Popover({ children, isDark, border, muted }: {
+  children: React.ReactNode; isDark: boolean; border: string; muted: string;
+}) {
+  return (
+    <div className={`absolute left-12 top-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} border ${border} rounded-md p-2 shadow-xl w-44 z-40`}>
       {children}
     </div>
   );
 }
 
-function DrawerItem({
-  icon: Icon, label, onClick, isDark, danger
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string; onClick: () => void; isDark: boolean; danger?: boolean;
+function SliderRow({ label, value, unit, min, max, onChange, isDark, muted }: {
+  label: string; value: number; unit: string; min: number; max: number;
+  onChange: (n: number) => void; isDark: boolean; muted: string;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm transition-colors ${
-        danger
-          ? isDark ? 'text-red-400 hover:bg-red-500/10' : 'text-red-600 hover:bg-red-50'
-          : isDark ? 'text-neutral-300 hover:bg-zinc-800' : 'text-neutral-700 hover:bg-zinc-100'
-      }`}
-    >
-      <Icon className="w-4 h-4" />
-      <span>{label}</span>
-    </button>
+    <>
+      <div className={`flex justify-between text-[11px] mb-1.5 ${muted}`}>
+        <span>{label}</span>
+        <span className="font-mono">{value}{unit}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full h-1 rounded appearance-none cursor-pointer accent-indigo-500"
+        style={{ background: isDark ? '#3f3f46' : '#e4e4e7' }}
+      />
+    </>
   );
 }

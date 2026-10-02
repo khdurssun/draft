@@ -1,10 +1,12 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
-  Pencil, Eraser, PaintBucket, Hand, Undo2, Redo2, Menu, Download, X,
-  Minus, Square, Circle, Sun, Moon, Trash2, Triangle, ChevronRight
+  Pencil, Eraser, PaintBucket, Hand, Lasso,
+  Minus, Square, Circle, Triangle, ChevronRight
 } from 'lucide-react';
 
-type Tool = 'pencil' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'eraser' | 'bucket' | 'hand';
+import draftLogo from './assets/draft-logo.png';
+
+type Tool = 'pencil' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'eraser' | 'bucket' | 'hand' | 'lasso';
 type ShapeTool = 'line' | 'rectangle' | 'circle' | 'triangle';
 type Theme = 'light' | 'dark';
 
@@ -14,6 +16,7 @@ interface FreehandStroke {
   type: 'stroke';
   tool: 'pencil' | 'eraser';
   points: Point[];
+  pressures?: number[];
   color: string;
   size: number;
 }
@@ -36,9 +39,19 @@ interface FillAction {
   color: string;
 }
 
-type CanvasAction = FreehandStroke | ShapeAction | FillAction;
+interface LassoAction {
+  type: 'lasso';
+  polygon: Point[];
+  buffer: HTMLCanvasElement | null;
+  bboxX: number;
+  bboxY: number;
+  offset: Point;
+  deleteOnly?: boolean;
+}
 
-const SHAPE_TOOLS: { id: ShapeTool; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
+type CanvasAction = FreehandStroke | ShapeAction | FillAction | LassoAction;
+
+const SHAPE_TOOLS: { id: ShapeTool; label: string; Icon: React.ComponentType<{ className?: string; strokeWidth?: number }> }[] = [
   { id: 'line', label: 'Line', Icon: Minus },
   { id: 'rectangle', label: 'Square', Icon: Square },
   { id: 'circle', label: 'Circle', Icon: Circle },
@@ -94,34 +107,22 @@ const hsvToRgb = (h: number, s: number, v: number) => {
   return { r: Math.round(r*255), g: Math.round(g*255), b: Math.round(b*255) };
 };
 
-function floodFill(
-  ctx: CanvasRenderingContext2D,
-  sx: number, sy: number,
-  fillColor: string,
-  W: number, H: number
-) {
+function floodFill(ctx: CanvasRenderingContext2D, sx: number, sy: number, fillColor: string, W: number, H: number) {
   sx = Math.round(sx); sy = Math.round(sy);
   if (sx < 0 || sx >= W || sy < 0 || sy >= H) return;
   const img = ctx.getImageData(0, 0, W, H);
   const d = img.data;
   const target = hexToRgb(fillColor);
   if (!target) return;
-
   const sp = (sy * W + sx) * 4;
   const sR = d[sp], sG = d[sp+1], sB = d[sp+2], sA = d[sp+3];
-
   if (sR === target.r && sG === target.g && sB === target.b && sA === 255) return;
-
   const TOL = 32;
   const match = (pos: number) =>
-    Math.abs(d[pos]-sR) <= TOL &&
-    Math.abs(d[pos+1]-sG) <= TOL &&
-    Math.abs(d[pos+2]-sB) <= TOL &&
-    Math.abs(d[pos+3]-sA) <= TOL;
-
+    Math.abs(d[pos]-sR) <= TOL && Math.abs(d[pos+1]-sG) <= TOL &&
+    Math.abs(d[pos+2]-sB) <= TOL && Math.abs(d[pos+3]-sA) <= TOL;
   const stack: number[] = [sx, sy];
   const visited = new Uint8Array(W * H);
-
   while (stack.length > 0) {
     const y = stack.pop()!;
     const x = stack.pop()!;
@@ -148,39 +149,91 @@ function floodFill(
       cx++;
     }
   }
+  ctx.putImageData(img, 0, 0);
+}
 
-  const HT = 96;
-  const heal = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const idx = x + y*W;
-      if (visited[idx] || heal[idx]) continue;
-      const p = idx * 4;
-      const r = d[p], g = d[p+1], b = d[p+2], a = d[p+3];
-      const dr = Math.abs(r-sR), dg = Math.abs(g-sG), db = Math.abs(b-sB), da = Math.abs(a-sA);
-      if (dr > HT || dg > HT || db > HT || da > HT) continue;
-      const adj =
-        (x > 0 && visited[x-1 + y*W]) ||
-        (x < W-1 && visited[x+1 + y*W]) ||
-        (y > 0 && visited[x + (y-1)*W]) ||
-        (y < H-1 && visited[x + (y+1)*W]);
-      if (!adj) continue;
-      const dist = Math.sqrt(dr*dr + dg*dg + db*db);
-      const maxD = HT * Math.sqrt(3);
-      const t = Math.min(1, Math.max(0, dist / maxD));
-      d[p] = Math.round(r*(1-t) + target.r*t);
-      d[p+1] = Math.round(g*(1-t) + target.g*t);
-      d[p+2] = Math.round(b*(1-t) + target.b*t);
-      d[p+3] = 255;
-      heal[idx] = 1;
+function pointInPolygon(pt: Point, poly: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    const intersect = ((yi > pt.y) !== (yj > pt.y)) &&
+      (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi + 1e-9) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function tracePolygon(ctx: CanvasRenderingContext2D, poly: Point[], offset: Point = { x: 0, y: 0 }) {
+  if (poly.length < 3) return;
+  ctx.beginPath();
+  ctx.moveTo(poly[0].x + offset.x, poly[0].y + offset.y);
+  for (let i = 1; i < poly.length; i++) {
+    ctx.lineTo(poly[i].x + offset.x, poly[i].y + offset.y);
+  }
+  ctx.closePath();
+}
+
+function drawStroke(ctx: CanvasRenderingContext2D, action: FreehandStroke) {
+  const pts = action.points;
+  const prs = action.pressures;
+  const baseSize = action.size;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = action.tool === 'eraser' ? '#FFFFFF' : action.color;
+  ctx.fillStyle = ctx.strokeStyle as string;
+
+  if (pts.length === 1) {
+    const pr = prs && prs.length > 0 ? prs[0] : 0.5;
+    const w = baseSize * (0.25 + pr * 0.75);
+    ctx.beginPath();
+    ctx.arc(pts[0].x, pts[0].y, w/2, 0, Math.PI*2);
+    ctx.fill();
+    return;
+  }
+
+  let varies = false;
+  if (prs && prs.length === pts.length) {
+    for (let i = 1; i < prs.length; i++) {
+      if (Math.abs(prs[i] - prs[0]) > 0.02) { varies = true; break; }
     }
   }
-  ctx.putImageData(img, 0, 0);
+
+  if (varies && prs) {
+    for (let i = 1; i < pts.length; i++) {
+      const pr = (prs[i-1] + prs[i]) / 2;
+      const w = Math.max(0.5, baseSize * (0.25 + pr * 0.75));
+      ctx.beginPath();
+      ctx.lineWidth = w;
+      ctx.moveTo(pts[i-1].x, pts[i-1].y);
+      ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+    const prFirst = prs[0];
+    const wFirst = Math.max(0.5, baseSize * (0.25 + prFirst * 0.75));
+    ctx.beginPath();
+    ctx.lineWidth = wFirst;
+    ctx.arc(pts[0].x, pts[0].y, wFirst/2, 0, Math.PI*2);
+    ctx.fill();
+    const prLast = prs[prs.length-1];
+    const wLast = Math.max(0.5, baseSize * (0.25 + prLast * 0.75));
+    ctx.beginPath();
+    ctx.arc(pts[pts.length-1].x, pts[pts.length-1].y, wLast/2, 0, Math.PI*2);
+    ctx.fill();
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.lineWidth = baseSize;
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
 }
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>('dark');
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [activeMenu, setActiveMenu] = useState<'file' | 'window' | null>(null);
+  const [exportSubmenuOpen, setExportSubmenuOpen] = useState(false);
 
   const canvasWidth = 794;
   const canvasHeight = 1123;
@@ -203,13 +256,15 @@ export default function App() {
   const [rgbInput, setRgbInput] = useState({ r: '30', g: '41', b: '59' });
 
   const [history, setHistory] = useState<CanvasAction[]>([]);
-  const [redoStack, setRedoStack] = useState<CanvasAction[]>([]);
+  const [, setRedoStack] = useState<CanvasAction[]>([]);
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [isSatDragging, setIsSatDragging] = useState(false);
   const [isHueDragging, setIsHueDragging] = useState(false);
 
   const currentStrokeRef = useRef<Point[]>([]);
+  const currentPressuresRef = useRef<number[]>([]);
   const shapeStartRef = useRef<Point | null>(null);
   const isMouseDownRef = useRef(false);
   const cursorPosRef = useRef<Point>({ x: 0, y: 0 });
@@ -226,12 +281,28 @@ export default function App() {
   const isShapeFilledRef = useRef(false);
   const zoomRef = useRef(0.85);
   const rafRef = useRef<number | null>(null);
-  const hasStrokeRef = useRef(false);
 
   const shapeHoldTimerRef = useRef<number | null>(null);
   const shapePressActiveRef = useRef(false);
   const shapeWasMenuOpenedRef = useRef(false);
   const hoveredShapeRef = useRef<ShapeTool | null>(null);
+
+  const bgImageRef = useRef<HTMLImageElement | null>(null);
+
+  const lassoPathRef = useRef<Point[]>([]);
+  const lassoPolyRef = useRef<Point[]>([]);
+  const lassoBufferRef = useRef<HTMLCanvasElement | null>(null);
+  const lassoBBoxRef = useRef<Point>({ x: 0, y: 0 });
+  const lassoOffsetRef = useRef<Point>({ x: 0, y: 0 });
+  const lassoModeRef = useRef<'draw' | 'selected' | 'move' | null>(null);
+  const lassoMoveStartRef = useRef<Point | null>(null);
+  const [hasSelection, setHasSelection] = useState(false);
+
+  const pointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(new Map());
+  const drawingPointerIdRef = useRef<number | null>(null);
+  const pinchStartRef = useRef<{ distance: number; center: Point; zoom: number; pan: Point } | null>(null);
+  const penActiveRef = useRef(false);
+  const penReleaseTimerRef = useRef<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -239,6 +310,10 @@ export default function App() {
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const satValRef = useRef<HTMLCanvasElement>(null);
   const hueRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const cursorRingRef = useRef<HTMLDivElement>(null);
+  const [isInsideCanvas, setIsInsideCanvas] = useState(false);
 
   const isDark = theme === 'dark';
   const isShapeTool = (t: Tool): t is ShapeTool =>
@@ -250,6 +325,16 @@ export default function App() {
   useEffect(() => { eraserSizeRef.current = eraserSize; }, [eraserSize]);
   useEffect(() => { shapeSizeRef.current = shapeSize; }, [shapeSize]);
   useEffect(() => { isShapeFilledRef.current = isShapeFilled; }, [isShapeFilled]);
+
+  useEffect(() => {
+    const ring = cursorRingRef.current;
+    if (!ring) return;
+    const size = activeTool === 'pencil' ? pencilSize : activeTool === 'eraser' ? eraserSize : 0;
+    if (size > 0) {
+      ring.style.width = `${size * zoomRef.current}px`;
+      ring.style.height = `${size * zoomRef.current}px`;
+    }
+  }, [pencilSize, eraserSize, activeTool]);
 
   const drawShape = (
     ctx: CanvasRenderingContext2D,
@@ -263,16 +348,13 @@ export default function App() {
     ctx.lineWidth = size;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-
     let dx = end.x - start.x;
     let dy = end.y - start.y;
-
     if (snapShift && (tool === 'rectangle' || tool === 'circle' || tool === 'triangle')) {
       const m = Math.max(Math.abs(dx), Math.abs(dy));
       dx = dx >= 0 ? m : -m;
       dy = dy >= 0 ? m : -m;
     }
-
     if (tool === 'line') {
       ctx.moveTo(start.x, start.y);
       ctx.lineTo(end.x, end.y);
@@ -304,26 +386,21 @@ export default function App() {
   const drawAction = (ctx: CanvasRenderingContext2D, action: CanvasAction) => {
     if (action.type === 'stroke') {
       if (action.points.length < 1) return;
-      ctx.beginPath();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = action.tool === 'eraser' ? '#FFFFFF' : action.color;
-      ctx.fillStyle = ctx.strokeStyle as string;
-      ctx.lineWidth = action.size;
-      if (action.points.length === 1) {
-        ctx.arc(action.points[0].x, action.points[0].y, action.size/2, 0, Math.PI*2);
-        ctx.fill();
-      } else {
-        ctx.moveTo(action.points[0].x, action.points[0].y);
-        for (let i = 1; i < action.points.length; i++) {
-          ctx.lineTo(action.points[i].x, action.points[i].y);
-        }
-        ctx.stroke();
-      }
+      drawStroke(ctx, action);
     } else if (action.type === 'shape') {
       drawShape(ctx, action.tool, action.start, action.end, action.color, action.size, action.isFilled, !!action.shiftKey);
     } else if (action.type === 'fill') {
       floodFill(ctx, action.x, action.y, action.color, canvasWidth, canvasHeight);
+    } else if (action.type === 'lasso') {
+      ctx.save();
+      tracePolygon(ctx, action.polygon);
+      ctx.clip();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+      ctx.restore();
+      if (!action.deleteOnly && action.buffer) {
+        ctx.drawImage(action.buffer, action.bboxX + action.offset.x, action.bboxY + action.offset.y);
+      }
     }
   };
 
@@ -334,6 +411,9 @@ export default function App() {
     if (!ctx) return;
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    if (bgImageRef.current) {
+      ctx.drawImage(bgImageRef.current, 0, 0, canvasWidth, canvasHeight);
+    }
     for (const a of history) drawAction(ctx, a);
   }, [history, canvasWidth, canvasHeight]);
 
@@ -345,26 +425,68 @@ export default function App() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-    if (!isMouseDownRef.current) return;
+
     const tool = activeToolRef.current;
+    const mode = lassoModeRef.current;
+
+    if (tool === 'lasso') {
+      const lw = 1.5 / zoomRef.current;
+      const dash = [6 / zoomRef.current, 4 / zoomRef.current];
+
+      if (mode === 'draw' && lassoPathRef.current.length > 1) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#6366f1';
+        ctx.lineWidth = lw;
+        ctx.setLineDash(dash);
+        const p = lassoPathRef.current;
+        ctx.moveTo(p[0].x, p[0].y);
+        for (let i = 1; i < p.length; i++) ctx.lineTo(p[i].x, p[i].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      if ((mode === 'selected' || mode === 'move') && lassoPolyRef.current.length > 0) {
+        const poly = lassoPolyRef.current;
+        const off = lassoOffsetRef.current;
+        const bbox = lassoBBoxRef.current;
+
+        ctx.save();
+        tracePolygon(ctx, poly);
+        ctx.clip();
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+        ctx.restore();
+
+        if (lassoBufferRef.current) {
+          ctx.drawImage(lassoBufferRef.current, bbox.x + off.x, bbox.y + off.y);
+        }
+
+        ctx.save();
+        ctx.translate(off.x, off.y);
+        tracePolygon(ctx, poly);
+        ctx.strokeStyle = '#6366f1';
+        ctx.lineWidth = lw;
+        ctx.setLineDash(dash);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+      return;
+    }
+
+    if (!isMouseDownRef.current) return;
     if (tool === 'pencil' || tool === 'eraser') {
       const pts = currentStrokeRef.current;
       if (pts.length === 0) return;
-      ctx.beginPath();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      const s = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
-      ctx.strokeStyle = tool === 'eraser' ? '#FFFFFF' : selectedColorRef.current;
-      ctx.fillStyle = ctx.strokeStyle as string;
-      ctx.lineWidth = s;
-      if (pts.length === 1) {
-        ctx.arc(pts[0].x, pts[0].y, s/2, 0, Math.PI*2);
-        ctx.fill();
-      } else {
-        ctx.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.stroke();
-      }
+      const size = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
+      drawStroke(ctx, {
+        type: 'stroke',
+        tool,
+        points: pts,
+        pressures: currentPressuresRef.current,
+        color: selectedColorRef.current,
+        size
+      });
     } else if (shapeStartRef.current && isShapeTool(tool)) {
       drawShape(ctx, tool, shapeStartRef.current, cursorPosRef.current, selectedColorRef.current, shapeSizeRef.current, isShapeFilledRef.current, shiftPressedRef.current);
     }
@@ -377,6 +499,16 @@ export default function App() {
       drawOverlay();
     });
   }, [drawOverlay]);
+
+  const updateFromHsv = useCallback((n: { h:number; s:number; v:number }) => {
+    setHsv(n);
+    const { r, g, b } = hsvToRgb(n.h, n.s, n.v);
+    const hex = rgbToHex(r, g, b);
+    setSelectedColor(hex);
+    selectedColorRef.current = hex;
+    setHexInput(hex);
+    setRgbInput({ r: String(r), g: String(g), b: String(b) });
+  }, []);
 
   useEffect(() => {
     const up = () => { setIsSatDragging(false); setIsHueDragging(false); };
@@ -393,20 +525,10 @@ export default function App() {
         updateFromHsv({ ...hsv, h: (x/r.width)*360 });
       }
     };
-    window.addEventListener('mouseup', up);
-    window.addEventListener('mousemove', move);
-    return () => { window.removeEventListener('mouseup', up); window.removeEventListener('mousemove', move); };
-  }, [isSatDragging, isHueDragging, hsv]);
-
-  const updateFromHsv = useCallback((n: { h:number; s:number; v:number }) => {
-    setHsv(n);
-    const { r, g, b } = hsvToRgb(n.h, n.s, n.v);
-    const hex = rgbToHex(r, g, b);
-    setSelectedColor(hex);
-    selectedColorRef.current = hex;
-    setHexInput(hex);
-    setRgbInput({ r: String(r), g: String(g), b: String(b) });
-  }, []);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointermove', move);
+    return () => { window.removeEventListener('pointerup', up); window.removeEventListener('pointermove', move); };
+  }, [isSatDragging, isHueDragging, hsv, updateFromHsv]);
 
   const handleHex = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -467,7 +589,89 @@ export default function App() {
     }
   }, [activePopover, hsv.h]);
 
+  const cancelLasso = useCallback(() => {
+    lassoPathRef.current = [];
+    lassoPolyRef.current = [];
+    lassoBufferRef.current = null;
+    lassoBBoxRef.current = { x: 0, y: 0 };
+    lassoOffsetRef.current = { x: 0, y: 0 };
+    lassoModeRef.current = null;
+    lassoMoveStartRef.current = null;
+    setHasSelection(false);
+    scheduleOverlay();
+  }, [scheduleOverlay]);
+
+  const commitLassoSelection = useCallback(() => {
+    const path = lassoPathRef.current;
+    if (path.length < 3) { cancelLasso(); return; }
+    const baseCanvas = baseCanvasRef.current;
+    if (!baseCanvas) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of path) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    const bw = Math.max(1, Math.ceil(maxX - minX));
+    const bh = Math.max(1, Math.ceil(maxY - minY));
+
+    const buf = document.createElement('canvas');
+    buf.width = bw;
+    buf.height = bh;
+    const bctx = buf.getContext('2d');
+    if (bctx) {
+      bctx.save();
+      bctx.translate(-minX, -minY);
+      tracePolygon(bctx, path);
+      bctx.clip();
+      bctx.drawImage(baseCanvas, 0, 0);
+      bctx.restore();
+    }
+
+    lassoPolyRef.current = [...path];
+    lassoBufferRef.current = buf;
+    lassoBBoxRef.current = { x: minX, y: minY };
+    lassoOffsetRef.current = { x: 0, y: 0 };
+    lassoPathRef.current = [];
+    lassoModeRef.current = 'selected';
+    setHasSelection(true);
+    scheduleOverlay();
+  }, [cancelLasso, scheduleOverlay]);
+
+  const finalizeLasso = useCallback((deleteOnly: boolean = false) => {
+    const poly = lassoPolyRef.current;
+    const buf = lassoBufferRef.current;
+    if (poly.length < 3) { cancelLasso(); return; }
+
+    const action: LassoAction = {
+      type: 'lasso',
+      polygon: [...poly],
+      buffer: deleteOnly ? null : buf,
+      bboxX: lassoBBoxRef.current.x,
+      bboxY: lassoBBoxRef.current.y,
+      offset: { ...lassoOffsetRef.current },
+      deleteOnly,
+    };
+
+    setHistory(p => [...p, action]);
+    setRedoStack([]);
+    setHistoryVersion(v => v + 1);
+
+    lassoPathRef.current = [];
+    lassoPolyRef.current = [];
+    lassoBufferRef.current = null;
+    lassoBBoxRef.current = { x: 0, y: 0 };
+    lassoOffsetRef.current = { x: 0, y: 0 };
+    lassoModeRef.current = null;
+    lassoMoveStartRef.current = null;
+    setHasSelection(false);
+    scheduleOverlay();
+  }, [cancelLasso, scheduleOverlay]);
+
   const undo = useCallback(() => {
+    if (lassoModeRef.current !== null) { cancelLasso(); return; }
     setHistory(p => {
       if (!p.length) return p;
       const n = [...p];
@@ -476,9 +680,10 @@ export default function App() {
       return n;
     });
     setHistoryVersion(v => v + 1);
-  }, []);
+  }, [cancelLasso]);
 
   const redo = useCallback(() => {
+    if (lassoModeRef.current !== null) return;
     setRedoStack(p => {
       if (!p.length) return p;
       const n = [...p];
@@ -494,7 +699,16 @@ export default function App() {
       if (['INPUT','TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
       if (e.key === 'Shift') shiftPressedRef.current = true;
       if (e.code === 'Space') spacePressedRef.current = true;
-      if (e.key === 'Escape') { setIsDrawerOpen(false); setActivePopover(null); setIsShapeMenuOpen(false); }
+
+      const mode = lassoModeRef.current;
+      if (activeToolRef.current === 'lasso' && mode !== null) {
+        if (e.key === 'Escape') { e.preventDefault(); cancelLasso(); return; }
+        if (e.key === 'Enter') { e.preventDefault(); finalizeLasso(false); return; }
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); finalizeLasso(true); return; }
+      }
+      if (e.key === 'Escape') {
+        setActiveMenu(null); setActivePopover(null); setIsShapeMenuOpen(false); setExportSubmenuOpen(false);
+      }
       const ctrl = e.ctrlKey || e.metaKey;
       const code = e.code, key = e.key.toLowerCase();
       if (ctrl) {
@@ -509,7 +723,22 @@ export default function App() {
     window.addEventListener('keydown', kd);
     window.addEventListener('keyup', ku);
     return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); };
-  }, [undo, redo]);
+  }, [undo, redo, cancelLasso, finalizeLasso]);
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+    setActiveMenu(null);
+  };
 
   const getCanvasPt = useCallback((cx: number, cy: number): Point => {
     if (!containerRef.current) return { x: 0, y: 0 };
@@ -533,32 +762,107 @@ export default function App() {
     if (canvasWrapperRef.current) {
       canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${nz})`;
     }
+    const ring = cursorRingRef.current;
+    if (ring) {
+      const size = activeToolRef.current === 'pencil' ? pencilSizeRef.current : activeToolRef.current === 'eraser' ? eraserSizeRef.current : 0;
+      if (size > 0) {
+        ring.style.width = `${size * nz}px`;
+        ring.style.height = `${size * nz}px`;
+      }
+    }
   };
 
-  const onDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    const isMiddle = e.button === 1;
-    const tool = activeToolRef.current;
-    const handMode = tool === 'hand' || spacePressedRef.current || isMiddle;
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    try { target.setPointerCapture(e.pointerId); } catch {}
 
-    if (handMode) {
-      e.preventDefault();
-      isPanningRef.current = true;
-      panStartRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
-      if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
+    const p = { x: e.clientX, y: e.clientY, type: e.pointerType };
+    pointersRef.current.set(e.pointerId, p);
+
+    if (e.pointerType === 'touch' && penActiveRef.current) return;
+    if (e.pointerType === 'touch') {
+      for (const ptr of pointersRef.current.values()) {
+        if (ptr.type === 'pen') return;
+      }
+    }
+
+    if (e.pointerType === 'pen') {
+      penActiveRef.current = true;
+      if (penReleaseTimerRef.current) {
+        window.clearTimeout(penReleaseTimerRef.current);
+        penReleaseTimerRef.current = null;
+      }
+    }
+
+    if (pointersRef.current.size === 2) {
+      const ptrs = Array.from(pointersRef.current.values());
+      const [a, b] = ptrs;
+      const distance = Math.hypot(a.x - b.x, a.y - b.y);
+      const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      pinchStartRef.current = {
+        distance,
+        center,
+        zoom: zoomRef.current,
+        pan: { ...panRef.current },
+      };
+      isMouseDownRef.current = false;
+      isPanningRef.current = false;
+      drawingPointerIdRef.current = null;
+      currentStrokeRef.current = [];
+      currentPressuresRef.current = [];
+      shapeStartRef.current = null;
+      lassoPathRef.current = [];
+      lassoModeRef.current = null;
+      setHasSelection(false);
+      scheduleOverlay();
       return;
     }
-    if (e.button !== 0) return;
+
+    if (pointersRef.current.size > 2) return;
+
+    const isPenEraser = e.pointerType === 'pen' && ((e.buttons & 32) !== 0);
+    const isMiddle = e.button === 1;
+    const tool = activeToolRef.current;
+    const handMode = tool === 'hand' || spacePressedRef.current || isMiddle || isPenEraser;
+
+    if (handMode) {
+      isPanningRef.current = true;
+      panStartRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+      drawingPointerIdRef.current = e.pointerId;
+      return;
+    }
+
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     const pt = getCanvasPt(e.clientX, e.clientY);
+    drawingPointerIdRef.current = e.pointerId;
     isMouseDownRef.current = true;
+
+    const pressure = e.pointerType === 'pen' ? (e.pressure > 0 ? e.pressure : 0.5) : 0.5;
 
     if (tool === 'pencil' || tool === 'eraser') {
       currentStrokeRef.current = [pt];
-      hasStrokeRef.current = true;
+      currentPressuresRef.current = [pressure];
       scheduleOverlay();
     } else if (isShapeTool(tool)) {
       shapeStartRef.current = pt;
       cursorPosRef.current = pt;
+      scheduleOverlay();
+    } else if (tool === 'lasso') {
+      const mode = lassoModeRef.current;
+      if (mode === 'selected' || mode === 'move') {
+        const off = lassoOffsetRef.current;
+        const testPoly = lassoPolyRef.current.map(q => ({ x: q.x + off.x, y: q.y + off.y }));
+        if (pointInPolygon(pt, testPoly)) {
+          lassoModeRef.current = 'move';
+          lassoMoveStartRef.current = pt;
+          scheduleOverlay();
+          return;
+        }
+        finalizeLasso(false);
+      }
+      lassoModeRef.current = 'draw';
+      lassoPathRef.current = [pt];
       scheduleOverlay();
     } else if (tool === 'bucket') {
       const c = baseCanvasRef.current;
@@ -568,10 +872,51 @@ export default function App() {
       floodFill(ctx, pt.x, pt.y, selectedColorRef.current, canvasWidth, canvasHeight);
       setHistory(p => [...p, { type: 'fill', x: Math.round(pt.x), y: Math.round(pt.y), color: selectedColorRef.current }]);
       setRedoStack([]);
+      setHistoryVersion(v => v + 1);
+      isMouseDownRef.current = false;
+      drawingPointerIdRef.current = null;
     }
   };
 
-  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const p = pointersRef.current.get(e.pointerId);
+    if (p) { p.x = e.clientX; p.y = e.clientY; }
+
+    const ring = cursorRingRef.current;
+    if (ring) {
+      ring.style.transform = `translate3d(${e.clientX}px, ${e.clientY}px, 0) translate(-50%, -50%)`;
+    }
+
+    if (pointersRef.current.size === 2 && pinchStartRef.current) {
+      const ptrs = Array.from(pointersRef.current.values());
+      const [a, b] = ptrs;
+      const distance = Math.hypot(a.x - b.x, a.y - b.y);
+      const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const scale = distance / Math.max(1, pinchStartRef.current.distance);
+      const newZoom = Math.max(0.15, Math.min(5, pinchStartRef.current.zoom * scale));
+      const dx = center.x - pinchStartRef.current.center.x;
+      const dy = center.y - pinchStartRef.current.center.y;
+      const newPan = {
+        x: pinchStartRef.current.pan.x + dx,
+        y: pinchStartRef.current.pan.y + dy,
+      };
+      zoomRef.current = newZoom;
+      panRef.current = newPan;
+      if (canvasWrapperRef.current) {
+        canvasWrapperRef.current.style.transform = `translate3d(${newPan.x}px, ${newPan.y}px, 0) scale(${newZoom})`;
+      }
+      if (ring) {
+        const size = activeToolRef.current === 'pencil' ? pencilSizeRef.current : activeToolRef.current === 'eraser' ? eraserSizeRef.current : 0;
+        if (size > 0) {
+          ring.style.width = `${size * newZoom}px`;
+          ring.style.height = `${size * newZoom}px`;
+        }
+      }
+      return;
+    }
+
+    if (e.pointerId !== drawingPointerIdRef.current) return;
+
     const pt = getCanvasPt(e.clientX, e.clientY);
     cursorPosRef.current = pt;
 
@@ -585,28 +930,82 @@ export default function App() {
     }
 
     const tool = activeToolRef.current;
+
+    if (tool === 'lasso') {
+      const mode = lassoModeRef.current;
+      if (mode === 'draw' && isMouseDownRef.current) {
+        lassoPathRef.current.push(pt);
+        scheduleOverlay();
+        return;
+      }
+      if (mode === 'move' && lassoMoveStartRef.current) {
+        const dx = pt.x - lassoMoveStartRef.current.x;
+        const dy = pt.y - lassoMoveStartRef.current.y;
+        lassoMoveStartRef.current = pt;
+        lassoOffsetRef.current = {
+          x: lassoOffsetRef.current.x + dx,
+          y: lassoOffsetRef.current.y + dy
+        };
+        scheduleOverlay();
+        return;
+      }
+      return;
+    }
+
     if (isMouseDownRef.current && (tool === 'pencil' || tool === 'eraser')) {
+      const pressure = e.pointerType === 'pen' ? (e.pressure > 0 ? e.pressure : 0.5) : 0.5;
       currentStrokeRef.current.push(pt);
+      currentPressuresRef.current.push(pressure);
       scheduleOverlay();
     } else if (isMouseDownRef.current && shapeStartRef.current) {
       scheduleOverlay();
     }
-    // update cursor ring position without state
-    const ring = document.getElementById('cursor-ring');
-    if (ring) {
-      ring.style.left = pt.x + 'px';
-      ring.style.top = pt.y + 'px';
-    }
   };
 
-  const onUp = () => {
-    if (isPanningRef.current) {
-      isPanningRef.current = false;
-      if (containerRef.current) containerRef.current.style.cursor = '';
+  const onPointerUp = (e: React.PointerEvent<HTMLElement>) => {
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+    pointersRef.current.delete(e.pointerId);
+
+    if (e.pointerType === 'pen') {
+      if (penReleaseTimerRef.current) window.clearTimeout(penReleaseTimerRef.current);
+      penReleaseTimerRef.current = window.setTimeout(() => {
+        penActiveRef.current = false;
+        penReleaseTimerRef.current = null;
+      }, 600);
+    }
+
+    if (pointersRef.current.size < 2) {
+      pinchStartRef.current = null;
+    }
+
+    if (e.pointerId !== drawingPointerIdRef.current) return;
+
+    const tool = activeToolRef.current;
+
+    if (tool === 'lasso') {
+      isMouseDownRef.current = false;
+      const mode = lassoModeRef.current;
+      if (mode === 'draw') {
+        commitLassoSelection();
+      } else if (mode === 'move') {
+        lassoModeRef.current = 'selected';
+        lassoMoveStartRef.current = null;
+        scheduleOverlay();
+      }
+      drawingPointerIdRef.current = null;
       return;
     }
-    if (!isMouseDownRef.current) return;
-    const tool = activeToolRef.current;
+
+    if (isPanningRef.current) {
+      isPanningRef.current = false;
+      drawingPointerIdRef.current = null;
+      return;
+    }
+
+    if (!isMouseDownRef.current) {
+      drawingPointerIdRef.current = null;
+      return;
+    }
 
     if (tool === 'pencil' || tool === 'eraser') {
       if (currentStrokeRef.current.length > 0) {
@@ -614,35 +1013,10 @@ export default function App() {
           type: 'stroke',
           tool,
           points: [...currentStrokeRef.current],
+          pressures: [...currentPressuresRef.current],
           color: selectedColorRef.current,
           size: tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current
         };
-        const c = baseCanvasRef.current;
-        if (c) {
-          const ctx = c.getContext('2d');
-          if (ctx) {
-            ctx.beginPath();
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            if (tool === 'eraser') {
-              ctx.strokeStyle = '#FFFFFF';
-              ctx.fillStyle = '#FFFFFF';
-              ctx.lineWidth = eraserSizeRef.current;
-            } else {
-              ctx.strokeStyle = selectedColorRef.current;
-              ctx.fillStyle = selectedColorRef.current;
-              ctx.lineWidth = pencilSizeRef.current;
-            }
-            if (s.points.length === 1) {
-              ctx.arc(s.points[0].x, s.points[0].y, s.size/2, 0, Math.PI*2);
-              ctx.fill();
-            } else {
-              ctx.moveTo(s.points[0].x, s.points[0].y);
-              for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
-              ctx.stroke();
-            }
-          }
-        }
         setHistory(p => [...p, s]);
         setRedoStack([]);
       }
@@ -657,19 +1031,17 @@ export default function App() {
         isFilled: isShapeFilledRef.current,
         shiftKey: shiftPressedRef.current
       };
-      const c = baseCanvasRef.current;
-      if (c) {
-        const ctx = c.getContext('2d');
-        if (ctx) drawAction(ctx, sh);
-      }
       setHistory(p => [...p, sh]);
       setRedoStack([]);
     }
 
     isMouseDownRef.current = false;
     currentStrokeRef.current = [];
+    currentPressuresRef.current = [];
     shapeStartRef.current = null;
-    hasStrokeRef.current = false;
+    drawingPointerIdRef.current = null;
+
+    setHistoryVersion(v => v + 1);
 
     const o = overlayCanvasRef.current;
     if (o) {
@@ -678,18 +1050,59 @@ export default function App() {
     }
   };
 
-  const exportImg = (fmt: 'png' | 'jpeg') => {
-    const b = baseCanvasRef.current;
-    if (!b) return;
-    const link = document.createElement('a');
-    link.download = `draft-${Date.now()}.${fmt === 'png' ? 'png' : 'jpg'}`;
-    link.href = fmt === 'png' ? b.toDataURL('image/png') : b.toDataURL('image/jpeg', 0.92);
-    link.click();
-    setIsDrawerOpen(false);
+  const onPointerCancel = (e: React.PointerEvent<HTMLElement>) => {
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchStartRef.current = null;
+
+    if (e.pointerId === drawingPointerIdRef.current) {
+      isMouseDownRef.current = false;
+      isPanningRef.current = false;
+      currentStrokeRef.current = [];
+      currentPressuresRef.current = [];
+      shapeStartRef.current = null;
+      drawingPointerIdRef.current = null;
+      const o = overlayCanvasRef.current;
+      if (o) {
+        const ctx = o.getContext('2d');
+        ctx?.clearRect(0, 0, canvasWidth, canvasHeight);
+      }
+    }
   };
 
-  const shapeMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
+  const exportImg = (fmt: 'png' | 'jpg' | 'jpeg') => {
+    const b = baseCanvasRef.current;
+    if (!b) return;
+    const mime = fmt === 'png' ? 'image/png' : 'image/jpeg';
+    const quality = fmt === 'png' ? undefined : 0.92;
+    const link = document.createElement('a');
+    link.download = `draft-${Date.now()}.${fmt}`;
+    link.href = b.toDataURL(mime, quality);
+    link.click();
+    setActiveMenu(null);
+    setExportSubmenuOpen(false);
+  };
+
+  const handleOpenProject = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        bgImageRef.current = img;
+        setHistory([]);
+        setRedoStack([]);
+        setHistoryVersion(v => v + 1);
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+    setActiveMenu(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const shapeMouseDown = () => {
     shapePressActiveRef.current = true;
     shapeWasMenuOpenedRef.current = false;
     shapeHoldTimerRef.current = window.setTimeout(() => {
@@ -725,17 +1138,24 @@ export default function App() {
       }
       shapePressActiveRef.current = false;
     };
-    window.addEventListener('mouseup', up);
-    return () => window.removeEventListener('mouseup', up);
+    window.addEventListener('pointerup', up);
+    return () => window.removeEventListener('pointerup', up);
   }, [lastShapeTool]);
 
   const toolClick = (t: Tool) => {
+    if (t !== 'lasso' && lassoModeRef.current !== null) {
+      if (lassoModeRef.current === 'selected' || lassoModeRef.current === 'move') {
+        finalizeLasso(false);
+      } else {
+        cancelLasso();
+      }
+    }
     if (t === 'pencil' || t === 'eraser') {
       if (activeTool === t) setActivePopover(activePopover === t ? null : t);
       else { setActiveTool(t); setActivePopover(null); }
       return;
     }
-    if (t === 'bucket' || t === 'hand') { setActiveTool(t); setActivePopover(null); return; }
+    if (t === 'bucket' || t === 'hand' || t === 'lasso') { setActiveTool(t); setActivePopover(null); return; }
     if (isShapeTool(t) && !isShapeMenuOpen) {
       setActivePopover(activePopover === 'shape' ? null : 'shape');
     }
@@ -754,106 +1174,212 @@ export default function App() {
   const btnBase = isDark ? 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100';
   const btnOn = isDark ? 'bg-zinc-800 text-white' : 'bg-zinc-200 text-zinc-900';
 
-  // Initialize transform once
+  const viewportBg = isDark ? '#18181b' : '#e4e4e7';
+
   useEffect(() => {
-    if (containerRef.current && canvasWrapperRef.current) {
-      const r = containerRef.current.getBoundingClientRect();
-      const sx = (r.width * 0.85) / canvasWidth;
-      const sy = (r.height * 0.85) / canvasHeight;
-      const z = Math.min(Math.max(Math.min(sx, sy), 0.2), 1);
-      zoomRef.current = z;
-      const np = {
-        x: (r.width - canvasWidth * z) / 2,
-        y: Math.max(20, (r.height - canvasHeight * z) / 2)
-      };
-      panRef.current = np;
-      canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${z})`;
-    }
+    const fit = () => {
+      if (containerRef.current && canvasWrapperRef.current) {
+        const r = containerRef.current.getBoundingClientRect();
+        const sx = (r.width * 0.85) / canvasWidth;
+        const sy = (r.height * 0.85) / canvasHeight;
+        const z = Math.min(Math.max(Math.min(sx, sy), 0.2), 1);
+        zoomRef.current = z;
+        const np = {
+          x: (r.width - canvasWidth * z) / 2,
+          y: Math.max(20, (r.height - canvasHeight * z) / 2)
+        };
+        panRef.current = np;
+        canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${z})`;
+      }
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
   }, []);
 
+  useEffect(() => {
+    if (!activeMenu) return;
+    const close = (e: PointerEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-menu]')) return;
+      setActiveMenu(null);
+      setExportSubmenuOpen(false);
+    };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [activeMenu]);
+
+  const cursorStyle: React.CSSProperties['cursor'] =
+    activeTool === 'hand' ? 'grab' : 'crosshair';
+
+  const ringSize =
+    activeTool === 'pencil' ? pencilSize
+    : activeTool === 'eraser' ? eraserSize
+    : 0;
+
   return (
-    <div className={`relative w-screen h-screen ${bg} ${text} font-sans select-none overflow-hidden`}>
+    <div className={`relative w-screen h-screen ${bg} ${text} font-sans select-none overflow-hidden flex flex-col`}>
 
-      {/* Top-left: menu button */}
-      <button
-        onClick={() => setIsDrawerOpen(true)}
-        className={`absolute top-3 left-3 z-50 w-9 h-9 ${panel} ${hover} rounded-md border ${border} flex items-center justify-center transition-colors`}
-      >
-        <Menu className="w-[18px] h-[18px]" strokeWidth={1.8} />
-      </button>
+      <div className={`h-9 ${panel} border-b ${border} flex items-stretch text-[13px] z-[80] relative shrink-0`} data-menu>
+        <div className="flex items-center justify-center px-2.5">
+          <img src={draftLogo} alt="Draft" className="h-5 w-5 object-contain" draggable={false} />
+        </div>
 
-      {/* Drawer backdrop */}
-      <div
-        onClick={() => setIsDrawerOpen(false)}
-        className={`fixed inset-0 z-[60] bg-black/40 transition-opacity duration-200 ${isDrawerOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        <MenuButton
+          label="File"
+          active={activeMenu === 'file'}
+          onToggle={() => { setActiveMenu(activeMenu === 'file' ? null : 'file'); setExportSubmenuOpen(false); }}
+        />
+        <MenuButton
+          label="Window"
+          active={activeMenu === 'window'}
+          onToggle={() => { setActiveMenu(activeMenu === 'window' ? null : 'window'); setExportSubmenuOpen(false); }}
+        />
+
+        {activeMenu === 'file' && (
+          <Dropdown panel={panel} border={border} width={210} offset={40}>
+            <DropItem label="Open Project" onClick={() => fileInputRef.current?.click()} hover={hover} />
+            <div className={`h-px my-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
+            <DropItem
+              label="Export"
+              right={<ChevronRight className="w-3.5 h-3.5" />}
+              onMouseEnter={() => setExportSubmenuOpen(true)}
+              hover={hover}
+            />
+            {exportSubmenuOpen && (
+              <div
+                className={`absolute left-full top-0 -mt-1 ml-0.5 ${panel} border ${border} rounded shadow-2xl py-1 min-w-[140px]`}
+                onMouseEnter={() => setExportSubmenuOpen(true)}
+                onMouseLeave={() => setExportSubmenuOpen(false)}
+              >
+                <DropItem label="PNG" onClick={() => exportImg('png')} hover={hover} />
+                <DropItem label="JPG" onClick={() => exportImg('jpg')} hover={hover} />
+                <DropItem label="JPEG" onClick={() => exportImg('jpeg')} hover={hover} />
+              </div>
+            )}
+          </Dropdown>
+        )}
+
+        {activeMenu === 'window' && (
+          <Dropdown panel={panel} border={border} width={210} offset={78}>
+            <DropItem
+              label={isDark ? 'Light Theme' : 'Dark Theme'}
+              onClick={() => { setTheme(isDark ? 'light' : 'dark'); setActiveMenu(null); }}
+              hover={hover}
+            />
+            <DropItem
+              label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              onClick={toggleFullscreen}
+              hover={hover}
+            />
+          </Dropdown>
+        )}
+      </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png, image/jpeg, image/webp"
+        onChange={handleOpenProject}
+        className="hidden"
       />
 
-      {/* Drawer */}
-      <aside
-        className={`fixed top-0 left-0 z-[70] h-full w-56 ${panel} border-r ${border} flex flex-col transition-transform duration-200 ease-out ${isDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      <main
+        ref={containerRef}
+        onWheel={onWheel}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={(e) => { setIsInsideCanvas(false); if (e.pointerType === 'mouse') onPointerCancel(e); }}
+        onPointerEnter={() => setIsInsideCanvas(true)}
+        onContextMenu={(e) => e.preventDefault()}
+        className="flex-1 relative overflow-hidden"
+        style={{
+          backgroundColor: viewportBg,
+          cursor: cursorStyle,
+          touchAction: 'none',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          WebkitTouchCallout: 'none',
+          WebkitTapHighlightColor: 'transparent',
+        }}
       >
-        <div className={`h-12 flex items-center justify-between px-3 border-b ${border}`}>
-          <span className="text-sm font-medium tracking-tight">Draft</span>
-          <button
-            onClick={() => setIsDrawerOpen(false)}
-            className={`w-7 h-7 rounded-md ${hover} flex items-center justify-center ${muted}`}
-          >
-            <X className="w-4 h-4" strokeWidth={1.8} />
-          </button>
+        <div
+          ref={canvasWrapperRef}
+          className="absolute top-0 left-0 origin-top-left will-change-transform"
+          style={{ width: canvasWidth, height: canvasHeight }}
+        >
+          <canvas
+            ref={baseCanvasRef}
+            width={canvasWidth}
+            height={canvasHeight}
+            className="block w-full h-full bg-white shadow-2xl"
+          />
+          <canvas
+            ref={overlayCanvasRef}
+            width={canvasWidth}
+            height={canvasHeight}
+            className="absolute top-0 left-0 w-full h-full pointer-events-none"
+          />
+
+          {hasSelection && activeTool === 'lasso' && (
+            <div className="absolute top-2 left-2 px-2 py-1 rounded text-[10px] font-mono z-20 bg-indigo-500 text-white">
+              Drag to move · Enter apply · Del remove · Esc cancel
+            </div>
+          )}
         </div>
+      </main>
 
-        <nav className="flex-1 py-2 px-1.5 flex flex-col gap-0.5">
-          <Row icon={Download} label="PNG" onClick={() => exportImg('png')} />
-          <Row icon={Download} label="JPEG" onClick={() => exportImg('jpeg')} />
-          <div className={`h-px my-1.5 mx-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
-          <Row icon={isDark ? Sun : Moon} label={isDark ? 'Light' : 'Dark'} onClick={() => setTheme(isDark ? 'light' : 'dark')} />
-          <Row icon={Trash2} label="Clear" onClick={() => { setHistory([]); setRedoStack([]); setHistoryVersion(v => v+1); setIsDrawerOpen(false); }} danger />
-        </nav>
+      {(activeTool === 'pencil' || activeTool === 'eraser') && isInsideCanvas && ringSize > 0 && (
+        <div
+          ref={cursorRingRef}
+          className="fixed top-0 left-0 pointer-events-none z-[100] rounded-full"
+          style={{
+            width: `${ringSize * zoomRef.current}px`,
+            height: `${ringSize * zoomRef.current}px`,
+            border: '1.5px solid rgba(99, 102, 241, 0.9)',
+            boxShadow: '0 0 0 1px rgba(255,255,255,0.85), 0 0 4px rgba(0,0,0,0.35)',
+            willChange: 'transform',
+          }}
+        />
+      )}
 
-        <div className={`h-9 px-3 border-t ${border} flex items-center justify-between text-[10px] font-mono ${muted}`}>
-          <span>{canvasWidth}×{canvasHeight}</span>
-          <span>{Math.round(zoomRef.current * 100)}%</span>
-        </div>
-      </aside>
-
-      {/* Toolbar */}
-      <aside className="absolute top-1/2 -translate-y-1/2 left-3 z-30">
+      <aside className="absolute top-1/2 -translate-y-1/2 left-2 md:left-3 z-30">
         <div className={`${panel} border ${border} rounded-lg p-1 flex flex-col gap-0.5 shadow-xl`}>
 
-          {/* Pencil */}
           <div className="relative">
             <button
               onClick={() => toolClick('pencil')}
-              className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'pencil' ? btnOn : btnBase}`}
+              className={`w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${activeTool === 'pencil' ? btnOn : btnBase}`}
             >
-              <Pencil className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <Pencil className="w-[18px] h-[18px] md:w-5 md:h-5" strokeWidth={1.8} />
             </button>
             {activePopover === 'pencil' && (
-              <Popover isDark={isDark} border={border} muted={muted}>
+              <Popover isDark={isDark} border={border}>
                 <SliderRow label="Size" value={pencilSize} unit="px" min={1} max={60} onChange={setPencilSize} isDark={isDark} muted={muted} />
               </Popover>
             )}
           </div>
 
-          {/* Shape */}
           <div className="relative">
             <button
-              onMouseDown={shapeMouseDown}
-              className={`relative w-9 h-9 rounded-md flex items-center justify-center transition-colors ${isShapeTool(activeTool) ? btnOn : btnBase}`}
+              onPointerDown={shapeMouseDown}
+              className={`relative w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${isShapeTool(activeTool) ? btnOn : btnBase}`}
             >
-              <CurrentShapeIcon className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <CurrentShapeIcon className="w-[18px] h-[18px] md:w-5 md:h-5" strokeWidth={1.8} />
               <ChevronRight className="absolute bottom-0.5 right-0.5 w-2.5 h-2.5 text-white drop-shadow-[0_0_1.5px_rgba(0,0,0,0.9)]" strokeWidth={3} />
             </button>
 
             {isShapeMenuOpen && (
-              <div className={`absolute left-12 top-0 ${panel} border ${border} rounded-md p-1 shadow-xl z-40 flex flex-col gap-0.5 min-w-[110px]`}>
+              <div className={`absolute left-11 md:left-12 top-0 ${panel} border ${border} rounded-md p-1 shadow-xl z-40 flex flex-col gap-0.5 min-w-[120px]`}>
                 {SHAPE_TOOLS.map(({ id, label, Icon }) => {
                   const hovered = hoveredShape === id;
                   const current = activeTool === id;
                   return (
                     <div
                       key={id}
-                      onMouseEnter={() => { setHoveredShape(id); hoveredShapeRef.current = id; }}
+                      onPointerEnter={() => { setHoveredShape(id); hoveredShapeRef.current = id; }}
                       className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer transition-colors ${
                         hovered ? 'bg-indigo-500 text-white' : current ? btnOn : btnBase
                       }`}
@@ -867,7 +1393,7 @@ export default function App() {
             )}
 
             {activePopover === 'shape' && isShapeTool(activeTool) && !isShapeMenuOpen && (
-              <Popover isDark={isDark} border={border} muted={muted}>
+              <Popover isDark={isDark} border={border}>
                 <SliderRow label="Line" value={shapeSize} unit="px" min={1} max={40} onChange={setShapeSize} isDark={isDark} muted={muted} />
                 {['rectangle','circle','triangle'].includes(activeTool) && (
                   <button
@@ -881,44 +1407,49 @@ export default function App() {
             )}
           </div>
 
-          {/* Eraser */}
           <div className="relative">
             <button
               onClick={() => toolClick('eraser')}
-              className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'eraser' ? btnOn : btnBase}`}
+              className={`w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${activeTool === 'eraser' ? btnOn : btnBase}`}
             >
-              <Eraser className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <Eraser className="w-[18px] h-[18px] md:w-5 md:h-5" strokeWidth={1.8} />
             </button>
             {activePopover === 'eraser' && (
-              <Popover isDark={isDark} border={border} muted={muted}>
+              <Popover isDark={isDark} border={border}>
                 <SliderRow label="Size" value={eraserSize} unit="px" min={4} max={120} onChange={setEraserSize} isDark={isDark} muted={muted} />
               </Popover>
             )}
           </div>
 
-          {/* Bucket */}
           <button
             onClick={() => toolClick('bucket')}
-            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'bucket' ? btnOn : btnBase}`}
+            className={`w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${activeTool === 'bucket' ? btnOn : btnBase}`}
           >
-            <PaintBucket className="w-[18px] h-[18px]" strokeWidth={1.8} />
+            <PaintBucket className="w-[18px] h-[18px] md:w-5 md:h-5" strokeWidth={1.8} />
           </button>
 
-          {/* Color */}
+          <button
+            onClick={() => toolClick('lasso')}
+            className={`w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${activeTool === 'lasso' ? btnOn : btnBase}`}
+          >
+            <Lasso className="w-[18px] h-[18px] md:w-5 md:h-5" strokeWidth={1.8} />
+          </button>
+
           <div className="relative">
             <button
               onClick={() => { setActivePopover(activePopover === 'color' ? null : 'color'); setIsShapeMenuOpen(false); }}
-              className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activePopover === 'color' ? btnOn : btnBase}`}
+              className={`w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${activePopover === 'color' ? btnOn : btnBase}`}
             >
-              <div className={`w-5 h-5 rounded border ${border}`} style={{ backgroundColor: selectedColor }} />
+              <div className={`w-5 h-5 md:w-6 md:h-6 rounded border ${border}`} style={{ backgroundColor: selectedColor }} />
             </button>
             {activePopover === 'color' && (
-              <div className={`absolute left-12 bottom-0 ${panel} border ${border} rounded-md p-2 shadow-xl w-52 z-50 flex flex-col gap-2`}>
-                <div className={`relative w-full h-28 rounded overflow-hidden border ${border} cursor-crosshair`}>
+              <div className={`absolute left-11 md:left-12 bottom-0 ${panel} border ${border} rounded-md p-2.5 shadow-xl w-56 z-50 flex flex-col gap-2`}>
+                <div className={`relative w-full h-32 rounded overflow-hidden border ${border} cursor-crosshair`}>
                   <canvas
                     ref={satValRef}
-                    width={200} height={112}
-                    onMouseDown={(e) => {
+                    width={216} height={128}
+                    onPointerDown={(e) => {
+                      (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
                       setIsSatDragging(true);
                       const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
                       const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
@@ -928,15 +1459,16 @@ export default function App() {
                     className="w-full h-full block"
                   />
                   <div
-                    className="absolute w-2.5 h-2.5 rounded-full border-2 border-white shadow pointer-events-none -translate-x-1/2 -translate-y-1/2"
+                    className="absolute w-3 h-3 rounded-full border-2 border-white shadow pointer-events-none -translate-x-1/2 -translate-y-1/2"
                     style={{ left: `${hsv.s}%`, top: `${100-hsv.v}%`, backgroundColor: selectedColor }}
                   />
                 </div>
                 <div className={`relative w-full h-2.5 rounded overflow-hidden border ${border} cursor-pointer`}>
                   <canvas
                     ref={hueRef}
-                    width={200} height={10}
-                    onMouseDown={(e) => {
+                    width={216} height={10}
+                    onPointerDown={(e) => {
+                      (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
                       setIsHueDragging(true);
                       const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
                       const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
@@ -976,113 +1508,80 @@ export default function App() {
             )}
           </div>
 
-          {/* Hand */}
           <button
             onClick={() => toolClick('hand')}
-            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${activeTool === 'hand' ? btnOn : btnBase}`}
+            className={`w-9 h-9 md:w-10 md:h-10 rounded-md flex items-center justify-center transition-colors ${activeTool === 'hand' ? btnOn : btnBase}`}
           >
-            <Hand className="w-[18px] h-[18px]" strokeWidth={1.8} />
-          </button>
-
-          <div className={`h-px my-0.5 mx-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
-
-          <button
-            onClick={undo}
-            disabled={!history.length}
-            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${btnBase} disabled:opacity-25 disabled:hover:bg-transparent`}
-          >
-            <Undo2 className="w-[18px] h-[18px]" strokeWidth={1.8} />
-          </button>
-          <button
-            onClick={redo}
-            disabled={!redoStack.length}
-            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${btnBase} disabled:opacity-25 disabled:hover:bg-transparent`}
-          >
-            <Redo2 className="w-[18px] h-[18px]" strokeWidth={1.8} />
+            <Hand className="w-[18px] h-[18px] md:w-5 md:h-5" strokeWidth={1.8} />
           </button>
         </div>
       </aside>
-
-      {/* Viewport */}
-      <main
-        ref={containerRef}
-        onWheel={onWheel}
-        onMouseDown={onDown}
-        onMouseMove={onMove}
-        onMouseUp={onUp}
-        className="w-full h-full overflow-hidden bg-zinc-200 dark:bg-zinc-900"
-        style={{ cursor: activeTool === 'hand' ? 'grab' : (activeTool === 'pencil' || activeTool === 'eraser') ? 'none' : 'crosshair' }}
-      >
-        <div
-          ref={canvasWrapperRef}
-          className="absolute top-0 left-0 origin-top-left will-change-transform"
-          style={{ width: canvasWidth, height: canvasHeight }}
-        >
-          <canvas
-            ref={baseCanvasRef}
-            width={canvasWidth}
-            height={canvasHeight}
-            className={`block w-full h-full bg-white shadow-2xl ${isDark ? 'border border-zinc-800' : 'border border-zinc-300'}`}
-          />
-          <canvas
-            ref={overlayCanvasRef}
-            width={canvasWidth}
-            height={canvasHeight}
-            className="absolute top-0 left-0 w-full h-full pointer-events-none"
-          />
-
-          {(activeTool === 'pencil' || activeTool === 'eraser') && (
-            <div
-              id="cursor-ring"
-              className={`absolute pointer-events-none rounded-full -translate-x-1/2 -translate-y-1/2 z-20 ${
-                activeTool === 'eraser'
-                  ? 'border border-black ring-1 ring-white/80'
-                  : 'border border-black ring-1 ring-white/80'
-              }`}
-              style={{
-                width: activeTool === 'eraser' ? eraserSize : Math.max(4, pencilSize),
-                height: activeTool === 'eraser' ? eraserSize : Math.max(4, pencilSize),
-                backgroundColor: activeTool === 'pencil' ? selectedColor : 'transparent',
-                display: 'none'
-              }}
-            />
-          )}
-        </div>
-      </main>
     </div>
   );
 }
 
-/* ---------- small components ---------- */
-
-function Row({
-  icon: Icon, label, onClick, danger
-}: {
-  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
+function MenuButton({ label, active, onToggle }: {
+  label: string; active: boolean; onToggle: () => void;
 }) {
   return (
     <button
-      onClick={onClick}
-      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[13px] transition-colors ${
-        danger
-          ? 'text-red-400 hover:bg-red-500/10'
-          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 dark:hover:bg-zinc-800'
+      onPointerDown={(e) => { e.stopPropagation(); onToggle(); }}
+      className={`px-3 text-[13px] transition-colors ${
+        active
+          ? 'bg-indigo-500 text-white'
+          : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800'
       }`}
     >
-      <Icon className="w-4 h-4" strokeWidth={1.8} />
-      <span>{label}</span>
+      {label}
     </button>
   );
 }
 
-function Popover({ children, isDark, border, muted }: {
-  children: React.ReactNode; isDark: boolean; border: string; muted: string;
+function Dropdown({ children, panel, border, width = 210, offset = 0 }: {
+  children: React.ReactNode;
+  panel: string;
+  border: string;
+  width?: number;
+  offset?: number;
 }) {
   return (
-    <div className={`absolute left-12 top-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} border ${border} rounded-md p-2 shadow-xl w-44 z-40`}>
+    <div
+      className={`absolute top-full ${panel} border ${border} rounded shadow-xl py-1 z-[90]`}
+      style={{ width, left: offset }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DropItem({ label, onClick, onMouseEnter, right, hover, danger }: {
+  label: string;
+  onClick?: () => void;
+  onMouseEnter?: () => void;
+  right?: React.ReactNode;
+  hover: string;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onPointerDown={(e) => { e.stopPropagation(); onClick?.(); }}
+      onMouseEnter={onMouseEnter}
+      className={`w-full flex items-center gap-2 px-3 py-1.5 text-[13px] transition-colors ${
+        danger ? 'text-red-400 hover:bg-red-500/10' : `text-zinc-300 ${hover}`
+      }`}
+    >
+      <span className="flex-1 text-left">{label}</span>
+      {right}
+    </button>
+  );
+}
+
+function Popover({ children, isDark, border }: {
+  children: React.ReactNode; isDark: boolean; border: string;
+}) {
+  return (
+    <div className={`absolute left-11 md:left-12 top-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} border ${border} rounded-md p-2.5 shadow-xl w-48 z-40`}>
       {children}
     </div>
   );

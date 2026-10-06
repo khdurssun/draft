@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronRight } from 'lucide-react';
-import { BRUSHES } from '../lib/constants';
+import { BRUSHES, type BrushGroup } from '../lib/constants';
 import type { BrushType } from '../lib/types';
 import type { TKey } from '../i18n/translations';
 
@@ -18,11 +18,12 @@ interface Props {
   t: (k: TKey) => string;
 }
 
-const GROUPS = [
-  { key: 'basic' as const, label: 'Basic' },
-  { key: 'soft' as const, label: 'Soft' },
-  { key: 'textured' as const, label: 'Textured' },
-  { key: 'special' as const, label: 'Special' },
+const GROUPS: { key: BrushGroup; label: string }[] = [
+  { key: 'basic',    label: 'Basic' },
+  { key: 'soft',     label: 'Soft' },
+  { key: 'textured', label: 'Textured' },
+  { key: 'special',  label: 'Special' },
+  { key: 'grand',    label: 'Grand' },
 ];
 
 export default function PencilPopover({
@@ -75,7 +76,7 @@ export default function PencilPopover({
       </div>
 
       {tab === 'brush' && (
-        <div className={`${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl shadow-2xl w-[210px] max-h-[420px] overflow-y-auto scroll-thin`}>
+        <div className={`${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl shadow-2xl w-[210px] max-h-[460px] overflow-y-auto scroll-thin`}>
           {GROUPS.map(g => (
             <div key={g.key} className={`border-b last:border-b-0 ${isDark ? 'border-[#1f1f22]' : 'border-zinc-100'}`}>
               <button
@@ -103,7 +104,7 @@ export default function PencilPopover({
                         }`}
                       >
                         <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.8} />
-                        <span className="truncate">{t(labelKey)}</span>
+                        <span className="truncate">{t(labelKey as TKey)}</span>
                       </button>
                     );
                   })}

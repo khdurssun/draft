@@ -2,11 +2,21 @@ export type Tool = 'pencil' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'er
 export type ShapeTool = 'line' | 'rectangle' | 'circle' | 'triangle';
 export type Theme = 'light' | 'dark';
 export type Lang = 'en' | 'ru';
+
 export type BrushType =
-  | 'round' | 'pencil' | 'marker'
-  | 'airbrush' | 'glow' | 'watercolor'
-  | 'spray' | 'chalk' | 'charcoal' | 'crayon'
-  | 'neon' | 'ink' | 'calligraphy' | 'bristle' | 'sparkle';
+  // basic
+  | 'round' | 'pencil' | 'marker' | 'ink' | 'calligraphy'
+  // soft
+  | 'airbrush' | 'glow' | 'watercolor' | 'neon'
+  | 'mist' | 'smoke' | 'cloud' | 'aurora' | 'fog'
+  // textured
+  | 'spray' | 'chalk' | 'charcoal' | 'crayon' | 'bristle'
+  | 'oil' | 'pastel' | 'sand' | 'rust' | 'concrete' | 'wood' | 'fabric'
+  // special
+  | 'sparkle' | 'stars' | 'confetti' | 'bubbles' | 'glitter'
+  | 'frost' | 'splatter' | 'vine' | 'leaves'
+  // grand
+  | 'mosaic' | 'rings' | 'web' | 'flame' | 'galaxy';
 
 export interface Point { x: number; y: number; }
 

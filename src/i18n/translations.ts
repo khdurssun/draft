@@ -26,6 +26,16 @@ export const T = {
     bGlitter: 'Glitter', bFrost: 'Frost', bSplatter: 'Splatter', bVine: 'Vine', bLeaves: 'Leaves',
     // grand
     bMosaic: 'Mosaic', bRings: 'Rings', bWeb: 'Web', bFlame: 'Flame', bGalaxy: 'Galaxy',
+
+    // animation
+    timeline: 'Timeline',
+    play: 'Play', pause: 'Pause', stop: 'Stop',
+    firstFrame: 'First frame', prevFrame: 'Previous frame',
+    nextFrame: 'Next frame', lastFrame: 'Last frame',
+    newFrame: 'New frame', duplicateFrame: 'Duplicate frame',
+    deleteFrame: 'Delete frame', clearFrame: 'Clear frame',
+    fps: 'FPS', frame: 'Frame',
+    onionSkin: 'Onion skin', onionPrev: 'Previous', onionNext: 'Next', onionOpacity: 'Opacity',
   },
   ru: {
     file: 'Файл', newProject: 'Новый проект', openImage: 'Открыть изображение', export: 'Экспорт',
@@ -54,6 +64,16 @@ export const T = {
     bGlitter: 'Блёстки', bFrost: 'Мороз', bSplatter: 'Брызги', bVine: 'Лоза', bLeaves: 'Листья',
     // grand
     bMosaic: 'Мозаика', bRings: 'Кольца', bWeb: 'Паутина', bFlame: 'Пламя', bGalaxy: 'Галактика',
+
+    // animation
+    timeline: 'Таймлайн',
+    play: 'Играть', pause: 'Пауза', stop: 'Стоп',
+    firstFrame: 'Первый кадр', prevFrame: 'Предыдущий кадр',
+    nextFrame: 'Следующий кадр', lastFrame: 'Последний кадр',
+    newFrame: 'Новый кадр', duplicateFrame: 'Дублировать кадр',
+    deleteFrame: 'Удалить кадр', clearFrame: 'Очистить кадр',
+    fps: 'FPS', frame: 'Кадр',
+    onionSkin: 'Onion skin', onionPrev: 'Предыдущие', onionNext: 'Следующие', onionOpacity: 'Прозрачность',
   },
 };
 

@@ -57,8 +57,10 @@ export interface LayerMeta {
   visible: boolean;
   locked: boolean;
 }
+
 export interface HistoryEntry {
   layerId: string;
+  frameId: string;       // ← НОВОЕ
   before: ImageData | null;
   after: ImageData | null;
   label: string;

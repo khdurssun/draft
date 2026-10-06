@@ -55,7 +55,6 @@ export default function TopBar({
       className={`h-9 ${panel} border-b ${border} flex items-center text-xs z-[80] relative shrink-0 px-2 select-none`}
       data-menu
     >
-      {/* Меню Файл + Версия */}
       <div className="flex items-center gap-3">
         <button
           onPointerDown={(e) => {
@@ -74,11 +73,10 @@ export default function TopBar({
         </button>
 
         <span className="text-[11px] font-mono opacity-40 select-none">
-          v0.5.1-alpha
+          v0.7.2-alpha
         </span>
       </div>
 
-      {/* Кнопки управления справа */}
       <div className="ml-auto flex items-center gap-0.5">
         <button
           onClick={onToggleFullscreen}
@@ -115,29 +113,15 @@ export default function TopBar({
         </button>
       </div>
 
-      {/* Выпадающее меню "Файл" */}
       {activeMenu === 'file' && (
         <div
           className={`absolute top-full left-2 ${panel} border ${border} rounded-md shadow-lg py-1 z-[90] mt-1 w-48`}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <MenuItem
-            label={t('newProject')}
-            onClick={onOpenNewProject}
-            isDark={isDark}
-          />
+          <MenuItem label={t('newProject')} onClick={onOpenNewProject} isDark={isDark} />
+          <MenuItem label={t('openImage')} onClick={onOpenImage} isDark={isDark} />
 
-          <MenuItem
-            label={t('openImage')}
-            onClick={onOpenImage}
-            isDark={isDark}
-          />
-
-          <div
-            className={`h-px my-1 ${
-              isDark ? 'bg-zinc-800' : 'bg-zinc-200'
-            }`}
-          />
+          <div className={`h-px my-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
           <div
             className="relative"
@@ -146,9 +130,7 @@ export default function TopBar({
           >
             <MenuItem
               label={t('export')}
-              right={
-                <ChevronRight className="w-3 h-3 opacity-50" />
-              }
+              right={<ChevronRight className="w-3 h-3 opacity-50" />}
               isDark={isDark}
             />
 
@@ -157,23 +139,10 @@ export default function TopBar({
                 className={`absolute left-full top-0 ${panel} border ${border} rounded-md shadow-lg py-1 w-44 -ml-1`}
                 onPointerEnter={() => onSetExportOpen(true)}
               >
-                <MenuItem
-                  label="PNG"
-                  onClick={() => onExport('png')}
-                  isDark={isDark}
-                />
+                <MenuItem label="PNG" onClick={() => onExport('png')} isDark={isDark} />
+                <MenuItem label="JPEG" onClick={() => onExport('jpeg')} isDark={isDark} />
 
-                <MenuItem
-                  label="JPEG"
-                  onClick={() => onExport('jpeg')}
-                  isDark={isDark}
-                />
-
-                <div
-                  className={`h-px my-1 ${
-                    isDark ? 'bg-zinc-800' : 'bg-zinc-200'
-                  }`}
-                />
+                <div className={`h-px my-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
                 <MenuItem
                   label={`${t('exportLayer')} (PNG)`}

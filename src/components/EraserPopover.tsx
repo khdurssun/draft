@@ -15,7 +15,7 @@ export default function EraserPopover({
   isDark, border, muted, eraserSize, setEraserSize, onPreview, onHidePreview, t,
 }: Props) {
   return (
-    <div className={`absolute left-11 top-0 ${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl p-3 shadow-2xl w-52 z-40`}>
+    <div className={`absolute left-[68px] top-0 ${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl p-3 shadow-2xl w-52 z-50`}>
       <div className={`flex justify-between text-[11px] mb-2 ${muted}`}>
         <span>{t('size')}</span>
         <span className="font-mono tabular-nums">{eraserSize}px</span>

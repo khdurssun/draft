@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { T } from './i18n/translations';
 import type { Tool, ShapeTool, Theme, Lang, BrushType, Point, LayerMeta, HistoryEntry, FreehandStroke, ShapeAction } from './lib/types';
 import { hexToRgb, rgbToHex, rgbToHsv, hsvToRgb } from './lib/color';
@@ -8,11 +8,16 @@ import { drawActionToCtx } from './lib/actions';
 import { drawStrokeToCtx } from './lib/brushes';
 import { drawShapeToCtx } from './lib/shapes';
 import { uid } from './lib/constants';
+import type { AnimationFrame } from './animation/types';
+import { createEmptyCanvas, cloneCanvas, createFrame } from './animation/frameManager';
+import { usePlayback } from './animation/playback';
+import { drawOnionSkin } from './animation/onionSkin';
 import TopBar from './components/TopBar';
 import Toolbar from './components/Toolbar';
 import LayersPanel from './components/LayersPanel';
 import SettingsModal from './components/SettingsModal';
 import NewProjectModal from './components/NewProjectModal';
+import Timeline from './components/Timeline';
 
 export default function App() {
   /* ─── State ─── */
@@ -51,17 +56,39 @@ export default function App() {
   const [layersVersion, setLayersVersion] = useState(0);
   const [activeLayerId, setActiveLayerId] = useState('');
   const [thumbsVersion, setThumbsVersion] = useState(0);
+  const [timelineVersion, setTimelineVersion] = useState(0);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [hasSelection, setHasSelection] = useState(false);
 
+  /* ─── Animation state ─── */
+  const [currentFrame, setCurrentFrame] = useState(0);
+  const [fps, setFps] = useState(12);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [onionPrev, setOnionPrev] = useState(1);
+  const [onionNext, setOnionNext] = useState(1);
+  const [onionOpacity, setOnionOpacity] = useState(0.3);
+
   /* ─── Refs ─── */
   const layersRef = useRef<LayerMeta[]>([]);
-  const layerCanvasesRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const activeLayerIdRef = useRef<string>('');
   const historyRef = useRef<HistoryEntry[]>([]);
   const redoRef = useRef<HistoryEntry[]>([]);
   const lastActiveLayerIdRef = useRef<string>('');
+
+  // Animation refs
+  const framesRef = useRef<Map<string, Map<string, HTMLCanvasElement>>>(new Map());
+  const frameOrderRef = useRef<string[]>([]);
+  const frameMetaRef = useRef<Map<string, AnimationFrame>>(new Map());
+  const currentFrameRef = useRef<number>(0);
+  const fpsRef = useRef<number>(12);
+  const frameCountRef = useRef<number>(1);
+  const onionSettingsRef = useRef({
+    enabled: true,
+    prev: 1,
+    next: 1,
+    opacity: 0.3,
+  });
 
   const currentStrokeRef = useRef<Point[]>([]);
   const currentPressuresRef = useRef<number[]>([]);
@@ -134,6 +161,16 @@ export default function App() {
   useEffect(() => { activeLayerIdRef.current = activeLayerId; }, [activeLayerId]);
   useEffect(() => { canvasBgRef.current = canvasBg; }, [canvasBg]);
   useEffect(() => { canvasSizeRef.current = canvasSize; }, [canvasSize]);
+  useEffect(() => { currentFrameRef.current = currentFrame; }, [currentFrame]);
+  useEffect(() => { fpsRef.current = fps; }, [fps]);
+  useEffect(() => {
+    onionSettingsRef.current = {
+      enabled: true,
+      prev: onionPrev,
+      next: onionNext,
+      opacity: onionOpacity,
+    };
+  }, [onionPrev, onionNext, onionOpacity]);
 
   /* ─── Persistence ─── */
   useEffect(() => {
@@ -161,6 +198,16 @@ export default function App() {
 
   const bumpLayers = () => setLayersVersion(v => v + 1);
   const bumpThumbs = () => setThumbsVersion(v => v + 1);
+  const bumpTimeline = () => setTimelineVersion(v => v + 1);
+
+  /* ─── Frame access helpers ─── */
+  const getFrameCanvasById = useCallback((layerId: string, frameId: string): HTMLCanvasElement | null => {
+    return framesRef.current.get(layerId)?.get(frameId) ?? null;
+  }, []);
+
+  const getCurrentFrameId = useCallback((): string | null => {
+    return frameOrderRef.current[currentFrameRef.current] ?? null;
+  }, []);
 
   /* ─── Composite render ─── */
   const renderComposite = useCallback(() => {
@@ -173,23 +220,47 @@ export default function App() {
     ctx.globalAlpha = 1;
     ctx.fillStyle = canvasBgRef.current;
     ctx.fillRect(0, 0, w, h);
+
+    const onion = onionSettingsRef.current;
+    if (onion.enabled && frameOrderRef.current.length > 1) {
+      drawOnionSkin({
+        ctx,
+        w,
+        h,
+        currentFrame: currentFrameRef.current,
+        frameOrder: frameOrderRef.current,
+        layers: layersRef.current,
+        getFrameCanvas: getFrameCanvasById,
+        settings: onion,
+      });
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    const fid = frameOrderRef.current[currentFrameRef.current];
+    if (!fid) return;
     for (const layer of layersRef.current) {
       if (!layer.visible) continue;
-      const lc = layerCanvasesRef.current.get(layer.id);
+      const lc = framesRef.current.get(layer.id)?.get(fid);
       if (!lc) continue;
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
       ctx.drawImage(lc, 0, 0);
     }
-  }, []);
+  }, [getFrameCanvasById]);
 
   /* ─── Init ─── */
   useEffect(() => {
     const { w, h } = canvasSizeRef.current;
-    const lc = document.createElement('canvas');
-    lc.width = w; lc.height = h;
+    const lc = createEmptyCanvas(w, h);
     const lid = uid();
-    layerCanvasesRef.current.set(lid, lc);
+    const firstFrame = createFrame();
+    frameOrderRef.current = [firstFrame.id];
+    frameMetaRef.current.set(firstFrame.id, firstFrame);
+    framesRef.current.set(lid, new Map([[firstFrame.id, lc]]));
+    frameCountRef.current = 1;
+    currentFrameRef.current = 0;
+
     layersRef.current = [{ id: lid, name: 'Layer 1', visible: true, locked: false }];
     activeLayerIdRef.current = lid;
     lastActiveLayerIdRef.current = lid;
@@ -202,6 +273,7 @@ export default function App() {
   }, []);
 
   useEffect(() => { renderComposite(); }, [canvasBg, layersVersion, renderComposite]);
+  useEffect(() => { renderComposite(); }, [currentFrame, onionPrev, onionNext, onionOpacity, renderComposite]);
 
   /* ─── Layer helpers ─── */
   const findLayer = (id: string): LayerMeta | null => {
@@ -212,9 +284,11 @@ export default function App() {
   const addLayer = () => {
     const { w, h } = canvasSizeRef.current;
     const id = uid();
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    layerCanvasesRef.current.set(id, c);
+    const frameMap = new Map<string, HTMLCanvasElement>();
+    for (const fid of frameOrderRef.current) {
+      frameMap.set(fid, createEmptyCanvas(w, h));
+    }
+    framesRef.current.set(id, frameMap);
     layersRef.current.push({
       id,
       name: `Layer ${layersRef.current.length + 1}`,
@@ -223,7 +297,7 @@ export default function App() {
     });
     setActiveLayerId(id);
     activeLayerIdRef.current = id;
-    bumpLayers(); renderComposite(); bumpThumbs();
+    bumpLayers(); renderComposite(); bumpThumbs(); bumpTimeline();
   };
 
   const deleteLayer = (id: string) => {
@@ -231,7 +305,7 @@ export default function App() {
     if (idx < 0) return;
     if (layersRef.current.length <= 1) return;
     layersRef.current.splice(idx, 1);
-    layerCanvasesRef.current.delete(id);
+    framesRef.current.delete(id);
     historyRef.current = historyRef.current.filter(e => e.layerId !== id);
     redoRef.current = redoRef.current.filter(e => e.layerId !== id);
     if (activeLayerIdRef.current === id) {
@@ -239,7 +313,7 @@ export default function App() {
       setActiveLayerId(next.id);
       activeLayerIdRef.current = next.id;
     }
-    bumpLayers(); renderComposite();
+    bumpLayers(); renderComposite(); bumpTimeline();
   };
 
   const moveLayerTo = (dragId: string, targetId: string, position: 'above' | 'below') => {
@@ -260,24 +334,32 @@ export default function App() {
   };
 
   /* ─── Snapshots ─── */
-  const snapshot = (layerId: string): ImageData | null => {
-    const c = layerCanvasesRef.current.get(layerId);
+  const snapshot = useCallback((layerId: string, frameId: string): ImageData | null => {
+    const c = framesRef.current.get(layerId)?.get(frameId);
     if (!c) return null;
     const ctx = c.getContext('2d');
     if (!ctx) return null;
     return ctx.getImageData(0, 0, c.width, c.height);
-  };
-  const restoreSnap = (layerId: string, data: ImageData | null) => {
+  }, []);
+
+  const restoreSnap = useCallback((layerId: string, frameId: string, data: ImageData | null) => {
     if (!data) return;
-    const c = layerCanvasesRef.current.get(layerId);
+    const c = framesRef.current.get(layerId)?.get(frameId);
     if (!c) return;
     c.getContext('2d')!.putImageData(data, 0, 0);
-  };
-  const pushHistory = (layerId: string, before: ImageData | null, after: ImageData | null, label: string) => {
-    historyRef.current.push({ layerId, before, after, label });
+  }, []);
+
+  const pushHistory = useCallback((
+    layerId: string,
+    frameId: string,
+    before: ImageData | null,
+    after: ImageData | null,
+    label: string
+  ) => {
+    historyRef.current.push({ layerId, frameId, before, after, label });
     if (historyRef.current.length > 30) historyRef.current.shift();
     redoRef.current = [];
-  };
+  }, []);
 
   /* ─── Lasso helpers ─── */
   const clearLassoState = useCallback(() => {
@@ -295,7 +377,8 @@ export default function App() {
   const commitLasso = useCallback((label = 'Lasso') => {
     const mode = lassoModeRef.current;
     const lid = activeLayerIdRef.current;
-    const lc = layerCanvasesRef.current.get(lid);
+    const fid = getCurrentFrameId();
+    const lc = fid ? getFrameCanvasById(lid, fid) : null;
     const buffer = lassoBufferRef.current;
     const poly = lassoPolyRef.current;
 
@@ -309,27 +392,28 @@ export default function App() {
     }
 
     const before = lassoPreSnapshotRef.current;
-    const after = snapshot(lid);
-    if (before && after) {
-      pushHistory(lid, before, after, label);
+    const after = fid ? snapshot(lid, fid) : null;
+    if (before && after && fid) {
+      pushHistory(lid, fid, before, after, label);
     }
 
     renderComposite();
-    bumpThumbs();
+    bumpThumbs(); bumpTimeline();
     clearLassoState();
-  }, [clearLassoState, renderComposite]);
+  }, [clearLassoState, renderComposite, snapshot, pushHistory, getCurrentFrameId, getFrameCanvasById]);
 
   const cancelLasso = useCallback(() => {
     const snap = lassoPreSnapshotRef.current;
-    if (snap) {
-      restoreSnap(activeLayerIdRef.current, snap);
+    const fid = getCurrentFrameId();
+    if (snap && fid) {
+      restoreSnap(activeLayerIdRef.current, fid, snap);
       renderComposite();
-      bumpThumbs();
+      bumpThumbs(); bumpTimeline();
     }
     clearLassoState();
-  }, [clearLassoState, renderComposite]);
+  }, [clearLassoState, renderComposite, restoreSnap, getCurrentFrameId]);
 
-  /* ─── Layer switch: commit active lasso before changing layer ─── */
+  /* ─── Layer switch ─── */
   useEffect(() => {
     if (lastActiveLayerIdRef.current !== activeLayerId) {
       if (lassoModeRef.current !== null) commitLasso('Lasso');
@@ -341,33 +425,133 @@ export default function App() {
   const undo = useCallback(() => {
     if (lassoModeRef.current !== null) {
       const snap = lassoPreSnapshotRef.current;
-      if (snap) restoreSnap(activeLayerIdRef.current, snap);
-      lassoPathRef.current = [];
-      lassoPolyRef.current = [];
-      lassoBufferRef.current = null;
-      lassoBBoxRef.current = { x: 0, y: 0 };
-      lassoOffsetRef.current = { x: 0, y: 0 };
-      lassoModeRef.current = null;
-      lassoMoveStartRef.current = null;
-      lassoPreSnapshotRef.current = null;
-      setHasSelection(false);
+      const fid = getCurrentFrameId();
+      if (snap && fid) restoreSnap(activeLayerIdRef.current, fid, snap);
+      clearLassoState();
       renderComposite();
       return;
     }
     const entry = historyRef.current.pop();
     if (!entry) return;
-    restoreSnap(entry.layerId, entry.before);
+    restoreSnap(entry.layerId, entry.frameId, entry.before);
     redoRef.current.push(entry);
-    renderComposite(); bumpThumbs();
-  }, [renderComposite]);
+    renderComposite(); bumpThumbs(); bumpTimeline();
+  }, [renderComposite, restoreSnap, getCurrentFrameId, clearLassoState]);
 
   const redo = useCallback(() => {
     const entry = redoRef.current.pop();
     if (!entry) return;
-    restoreSnap(entry.layerId, entry.after);
+    restoreSnap(entry.layerId, entry.frameId, entry.after);
     historyRef.current.push(entry);
-    renderComposite(); bumpThumbs();
+    renderComposite(); bumpThumbs(); bumpTimeline();
+  }, [renderComposite, restoreSnap]);
+
+  /* ─── Frame operations ─── */
+  const selectFrame = useCallback((idx: number) => {
+    if (idx < 0 || idx >= frameOrderRef.current.length) return;
+    if (lassoModeRef.current !== null) commitLasso('Lasso');
+    currentFrameRef.current = idx;
+    setCurrentFrame(idx);
+    const o = overlayCanvasRef.current;
+    if (o) {
+      const { w, h } = canvasSizeRef.current;
+      o.getContext('2d')?.clearRect(0, 0, w, h);
+    }
+    renderComposite();
+    bumpTimeline();
+  }, [commitLasso, renderComposite]);
+
+  const addFrame = useCallback(() => {
+    const { w, h } = canvasSizeRef.current;
+    const frame = createFrame();
+    for (const layer of layersRef.current) {
+      if (!framesRef.current.has(layer.id)) framesRef.current.set(layer.id, new Map());
+      framesRef.current.get(layer.id)!.set(frame.id, createEmptyCanvas(w, h));
+    }
+    const insertAt = currentFrameRef.current + 1;
+    frameOrderRef.current.splice(insertAt, 0, frame.id);
+    frameMetaRef.current.set(frame.id, frame);
+    frameCountRef.current = frameOrderRef.current.length;
+    currentFrameRef.current = insertAt;
+    setCurrentFrame(insertAt);
+    renderComposite();
+    bumpTimeline();
   }, [renderComposite]);
+
+  const duplicateFrame = useCallback(() => {
+    const { w, h } = canvasSizeRef.current;
+    const srcId = frameOrderRef.current[currentFrameRef.current];
+    if (!srcId) return;
+    const frame = createFrame();
+    for (const layer of layersRef.current) {
+      if (!framesRef.current.has(layer.id)) framesRef.current.set(layer.id, new Map());
+      const src = framesRef.current.get(layer.id)?.get(srcId);
+      const dst = src ? cloneCanvas(src) : createEmptyCanvas(w, h);
+      framesRef.current.get(layer.id)!.set(frame.id, dst);
+    }
+    const insertAt = currentFrameRef.current + 1;
+    frameOrderRef.current.splice(insertAt, 0, frame.id);
+    frameMetaRef.current.set(frame.id, frame);
+    frameCountRef.current = frameOrderRef.current.length;
+    currentFrameRef.current = insertAt;
+    setCurrentFrame(insertAt);
+    renderComposite();
+    bumpTimeline();
+  }, [renderComposite]);
+
+  const deleteFrame = useCallback(() => {
+    if (frameOrderRef.current.length <= 1) return;
+    const idx = currentFrameRef.current;
+    const fid = frameOrderRef.current[idx];
+    if (!fid) return;
+    for (const layer of layersRef.current) {
+      framesRef.current.get(layer.id)?.delete(fid);
+    }
+    frameMetaRef.current.delete(fid);
+    frameOrderRef.current.splice(idx, 1);
+    historyRef.current = historyRef.current.filter(e => e.frameId !== fid);
+    redoRef.current = redoRef.current.filter(e => e.frameId !== fid);
+    frameCountRef.current = frameOrderRef.current.length;
+    const nextIdx = Math.max(0, Math.min(idx, frameOrderRef.current.length - 1));
+    currentFrameRef.current = nextIdx;
+    setCurrentFrame(nextIdx);
+    renderComposite();
+    bumpTimeline();
+  }, [renderComposite]);
+
+  const clearFrame = useCallback(() => {
+    const fid = frameOrderRef.current[currentFrameRef.current];
+    if (!fid) return;
+    for (const layer of layersRef.current) {
+      const c = framesRef.current.get(layer.id)?.get(fid);
+      if (!c) continue;
+      const ctx = c.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+    }
+    renderComposite();
+    bumpTimeline(); bumpThumbs();
+  }, [renderComposite]);
+
+  /* ─── Playback ─── */
+  const advanceFrame = useCallback((next: number) => {
+    currentFrameRef.current = next;
+    setCurrentFrame(next);
+    renderComposite();
+  }, [renderComposite]);
+
+  usePlayback({
+    isPlaying,
+    fpsRef,
+    frameCountRef,
+    currentFrameRef,
+    onAdvance: advanceFrame,
+  });
+
+  const onPlayPause = () => setIsPlaying(p => !p);
+  const onStopPlayback = () => {
+    setIsPlaying(false);
+    selectFrame(0);
+  };
 
   /* ─── Color inputs ─── */
   const updateFromHsv = useCallback((n: { h: number; s: number; v: number }) => {
@@ -552,8 +736,10 @@ export default function App() {
         if (e.key === 'Delete' || e.key === 'Backspace') {
           e.preventDefault();
           const lid = activeLayerIdRef.current;
-          const before = lassoPreSnapshotRef.current ?? snapshot(lid);
-          const lc = layerCanvasesRef.current.get(lid);
+          const fid = getCurrentFrameId();
+          if (!fid) return;
+          const before = lassoPreSnapshotRef.current ?? snapshot(lid, fid);
+          const lc = getFrameCanvasById(lid, fid);
           if (lc && lassoPolyRef.current.length >= 3) {
             const ctx = lc.getContext('2d');
             if (ctx) {
@@ -565,55 +751,12 @@ export default function App() {
               ctx.restore();
             }
           }
-          const after = snapshot(lid);
-          if (before && after) pushHistory(lid, before, after, 'Lasso delete');
+          const after = snapshot(lid, fid);
+          if (before && after) pushHistory(lid, fid, before, after, 'Lasso delete');
           clearLassoState();
           renderComposite();
-          bumpThumbs();
+          bumpThumbs(); bumpTimeline();
           scheduleOverlay();
-          return;
-        }
-      if (e.key === 'Escape') {
-          e.preventDefault();
-          const snap = lassoPreSnapshotRef.current;
-          if (snap) restoreSnap(activeLayerIdRef.current, snap);
-          lassoPathRef.current = []; lassoPolyRef.current = []; lassoBufferRef.current = null;
-          lassoBBoxRef.current = { x: 0, y: 0 }; lassoOffsetRef.current = { x: 0, y: 0 };
-          lassoModeRef.current = null; lassoMoveStartRef.current = null; lassoPreSnapshotRef.current = null;
-          setHasSelection(false); scheduleOverlay(); renderComposite();
-          return;
-        }
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          const snap = lassoPreSnapshotRef.current;
-          const lid = activeLayerIdRef.current;
-          if (snap) {
-            const after = snapshot(lid);
-            if (after) pushHistory(lid, snap, after, 'Lasso');
-          }
-          lassoPathRef.current = []; lassoPolyRef.current = []; lassoBufferRef.current = null;
-          lassoBBoxRef.current = { x: 0, y: 0 }; lassoOffsetRef.current = { x: 0, y: 0 };
-          lassoModeRef.current = null; lassoMoveStartRef.current = null; lassoPreSnapshotRef.current = null;
-          setHasSelection(false); scheduleOverlay(); bumpThumbs();
-          return;
-        }
-        if (e.key === 'Delete' || e.key === 'Backspace') {
-          e.preventDefault();
-          const lc = layerCanvasesRef.current.get(activeLayerIdRef.current);
-          if (lc) {
-            const ctx = lc.getContext('2d')!;
-            ctx.save();
-            ctx.globalCompositeOperation = 'destination-out';
-            tracePolygon(ctx, lassoPolyRef.current, lassoOffsetRef.current);
-            ctx.fillStyle = 'rgba(0,0,0,1)';
-            ctx.fill();
-            ctx.restore();
-          }
-          renderComposite();
-          lassoPathRef.current = []; lassoPolyRef.current = []; lassoBufferRef.current = null;
-          lassoBBoxRef.current = { x: 0, y: 0 }; lassoOffsetRef.current = { x: 0, y: 0 };
-          lassoModeRef.current = null; lassoMoveStartRef.current = null; lassoPreSnapshotRef.current = null;
-          setHasSelection(false); scheduleOverlay(); bumpThumbs();
           return;
         }
       }
@@ -627,6 +770,15 @@ export default function App() {
         if ((code === 'KeyZ' || key === 'z' || key === 'я') && !e.shiftKey) { e.preventDefault(); undo(); }
         else if ((code === 'KeyY' || key === 'y' || key === 'н') || ((code === 'KeyZ' || key === 'z' || key === 'я') && e.shiftKey)) { e.preventDefault(); redo(); }
       }
+      if (e.key === 'ArrowLeft' && !ctrl) {
+        e.preventDefault();
+        selectFrame(Math.max(0, currentFrameRef.current - 1));
+      }
+      if (e.key === 'ArrowRight' && !ctrl) {
+        e.preventDefault();
+        selectFrame(Math.min(frameOrderRef.current.length - 1, currentFrameRef.current + 1));
+      }
+      if (e.code === 'Comma' && !ctrl) { e.preventDefault(); addFrame(); }
     };
     const ku = (e: KeyboardEvent) => {
       if (e.key === 'Shift') shiftPressedRef.current = false;
@@ -650,7 +802,8 @@ export default function App() {
       document.removeEventListener('visibilitychange', blur);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [undo, redo, scheduleOverlay, renderComposite, commitLasso, cancelLasso, clearLassoState]);
+  }, [undo, redo, scheduleOverlay, renderComposite, commitLasso, cancelLasso, clearLassoState,
+      selectFrame, addFrame, snapshot, pushHistory, getCurrentFrameId, getFrameCanvasById]);
 
   useEffect(() => {
     const onFs = () => setIsFullscreen(!!document.fullscreenElement);
@@ -802,27 +955,29 @@ export default function App() {
         }
         commitLasso('Lasso');
       }
-      lassoPreSnapshotRef.current = snapshot(activeLayerIdRef.current);
+      const fid = getCurrentFrameId();
+      lassoPreSnapshotRef.current = fid ? snapshot(activeLayerIdRef.current, fid) : null;
       lassoModeRef.current = 'draw';
       lassoPathRef.current = [pt];
       scheduleOverlay();
     } else if (tool === 'bucket') {
       const comp = baseCanvasRef.current;
-      const lc = layerCanvasesRef.current.get(activeLayerIdRef.current);
-      if (!comp || !lc) return;
+      const fid = getCurrentFrameId();
+      const lc = fid ? getFrameCanvasById(activeLayerIdRef.current, fid) : null;
+      if (!comp || !lc || !fid) return;
       const compCtx = comp.getContext('2d');
       if (!compCtx) return;
-      const before = snapshot(activeLayerIdRef.current);
+      const before = snapshot(activeLayerIdRef.current, fid);
       const { w, h } = canvasSizeRef.current;
       const refData = compCtx.getImageData(0, 0, w, h).data;
       const lctx = lc.getContext('2d')!;
       floodFill(lctx, refData, pt.x, pt.y, selectedColorRef.current, w, h);
       renderComposite();
-      const after = snapshot(activeLayerIdRef.current);
-      pushHistory(activeLayerIdRef.current, before, after, 'Fill');
+      const after = snapshot(activeLayerIdRef.current, fid);
+      pushHistory(activeLayerIdRef.current, fid, before, after, 'Fill');
       isMouseDownRef.current = false;
       drawingPointerIdRef.current = null;
-      bumpThumbs();
+      bumpThumbs(); bumpTimeline();
     }
   };
 
@@ -922,7 +1077,8 @@ export default function App() {
     if (e.pointerId !== drawingPointerIdRef.current) return;
 
     const tool = activeToolRef.current;
-    const lc = layerCanvasesRef.current.get(activeLayerIdRef.current);
+    const fid = getCurrentFrameId();
+    const lc = fid ? getFrameCanvasById(activeLayerIdRef.current, fid) : null;
 
     if (tool === 'lasso') {
       isMouseDownRef.current = false;
@@ -981,8 +1137,8 @@ export default function App() {
         }
         const snap = lassoPreSnapshotRef.current;
         const lid = activeLayerIdRef.current;
-        const after = snapshot(lid);
-        if (snap && after) pushHistory(lid, snap, after, 'Lasso move');
+        const after = fid ? snapshot(lid, fid) : null;
+        if (snap && after && fid) pushHistory(lid, fid, snap, after, 'Lasso move');
         lassoPathRef.current = [];
         lassoPolyRef.current = [];
         lassoBufferRef.current = null;
@@ -1007,7 +1163,7 @@ export default function App() {
       drawingPointerIdRef.current = null;
       return;
     }
-    if (!lc) {
+    if (!lc || !fid) {
       isMouseDownRef.current = false;
       currentStrokeRef.current = [];
       currentPressuresRef.current = [];
@@ -1023,7 +1179,7 @@ export default function App() {
     }
 
     const lid = activeLayerIdRef.current;
-    const before = snapshot(lid);
+    const before = snapshot(lid, fid);
 
     if (tool === 'pencil' || tool === 'eraser') {
       if (currentStrokeRef.current.length > 0) {
@@ -1038,9 +1194,9 @@ export default function App() {
         };
         drawActionToCtx(lc.getContext('2d')!, action);
         renderComposite();
-        const after = snapshot(lid);
-        pushHistory(lid, before, after, tool);
-        bumpThumbs();
+        const after = snapshot(lid, fid);
+        pushHistory(lid, fid, before, after, tool);
+        bumpThumbs(); bumpTimeline();
       }
     } else if (shapeStartRef.current && isShapeTool(tool)) {
       const action: ShapeAction = {
@@ -1055,9 +1211,9 @@ export default function App() {
       };
       drawActionToCtx(lc.getContext('2d')!, action);
       renderComposite();
-      const after = snapshot(lid);
-      pushHistory(lid, before, after, 'Shape');
-      bumpThumbs();
+      const after = snapshot(lid, fid);
+      pushHistory(lid, fid, before, after, 'Shape');
+      bumpThumbs(); bumpTimeline();
     }
 
     isMouseDownRef.current = false;
@@ -1101,17 +1257,22 @@ export default function App() {
     comp.width = w;
     comp.height = h;
     const ctx = comp.getContext('2d')!;
+    const fid = getCurrentFrameId();
     if (onlyActive) {
-      const lc = layerCanvasesRef.current.get(activeLayerIdRef.current);
-      if (lc) ctx.drawImage(lc, 0, 0);
+      if (fid) {
+        const lc = getFrameCanvasById(activeLayerIdRef.current, fid);
+        if (lc) ctx.drawImage(lc, 0, 0);
+      }
     } else {
       ctx.fillStyle = canvasBgRef.current;
       ctx.fillRect(0, 0, w, h);
-      for (const layer of layersRef.current) {
-        if (!layer.visible) continue;
-        const lc = layerCanvasesRef.current.get(layer.id);
-        if (!lc) continue;
-        ctx.drawImage(lc, 0, 0);
+      if (fid) {
+        for (const layer of layersRef.current) {
+          if (!layer.visible) continue;
+          const lc = framesRef.current.get(layer.id)?.get(fid);
+          if (!lc) continue;
+          ctx.drawImage(lc, 0, 0);
+        }
       }
     }
     const mime = fmt === 'png' ? 'image/png' : 'image/jpeg';
@@ -1133,19 +1294,23 @@ export default function App() {
       img.onload = () => {
         const { w, h } = canvasSizeRef.current;
         const id = uid();
-        const c = document.createElement('canvas');
-        c.width = w;
-        c.height = h;
-        const ctx = c.getContext('2d')!;
-        const sx = w / img.width, sy = h / img.height;
-        const scale = Math.min(sx, sy);
-        const dw = img.width * scale, dh = img.height * scale;
-        ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
-        layerCanvasesRef.current.set(id, c);
+        const frameMap = new Map<string, HTMLCanvasElement>();
+        for (const fid of frameOrderRef.current) {
+          const c = createEmptyCanvas(w, h);
+          if (fid === frameOrderRef.current[0]) {
+            const ctx = c.getContext('2d')!;
+            const sx = w / img.width, sy = h / img.height;
+            const scale = Math.min(sx, sy);
+            const dw = img.width * scale, dh = img.height * scale;
+            ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+          }
+          frameMap.set(fid, c);
+        }
+        framesRef.current.set(id, frameMap);
         layersRef.current.push({ id, name: 'Imported', visible: true, locked: false });
         setActiveLayerId(id);
         activeLayerIdRef.current = id;
-        bumpLayers(); renderComposite(); bumpThumbs();
+        bumpLayers(); renderComposite(); bumpThumbs(); bumpTimeline();
       };
       img.src = event.target?.result as string;
     };
@@ -1156,11 +1321,15 @@ export default function App() {
 
   const createNewProject = (w: number, h: number) => {
     const lid = uid();
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    layerCanvasesRef.current.clear();
-    layerCanvasesRef.current.set(lid, canvas);
+    const firstFrame = createFrame();
+    framesRef.current.clear();
+    framesRef.current.set(lid, new Map([[firstFrame.id, createEmptyCanvas(w, h)]]));
+    frameOrderRef.current = [firstFrame.id];
+    frameMetaRef.current = new Map([[firstFrame.id, firstFrame]]);
+    frameCountRef.current = 1;
+    currentFrameRef.current = 0;
+    setCurrentFrame(0);
+
     layersRef.current = [{ id: lid, name: 'Layer 1', visible: true, locked: false }];
     activeLayerIdRef.current = lid;
     setActiveLayerId(lid);
@@ -1170,7 +1339,8 @@ export default function App() {
     if (overlayCanvasRef.current) { overlayCanvasRef.current.width = w; overlayCanvasRef.current.height = h; }
     canvasSizeRef.current = { w, h };
     setCanvasSize({ w, h });
-    bumpLayers();
+    setIsPlaying(false);
+    bumpLayers(); bumpTimeline();
     setTimeout(() => {
       renderComposite();
       if (containerRef.current && canvasWrapperRef.current) {
@@ -1263,6 +1433,19 @@ export default function App() {
 
   const t = (key: keyof typeof T.en) => T[lang][key];
 
+  /* ─── Derived map для LayersPanel ─── */
+  const currentFrameLayerCanvases = useMemo(() => {
+    const map = new Map<string, HTMLCanvasElement>();
+    const fid = frameOrderRef.current[currentFrame];
+    if (!fid) return map;
+    for (const layer of layersRef.current) {
+      const c = framesRef.current.get(layer.id)?.get(fid);
+      if (c) map.set(layer.id, c);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFrame, layersVersion, thumbsVersion]);
+
   /* ─── Theme tokens ─── */
   const bg = isDark ? 'bg-[#0a0a0b]' : 'bg-[#f4f4f5]';
   const panel = isDark ? 'bg-[#0f0f10]' : 'bg-white';
@@ -1288,7 +1471,7 @@ export default function App() {
         .slider-custom::-webkit-slider-thumb:hover { transform: scale(1.15); }
         .slider-custom::-webkit-slider-thumb:active { cursor: grabbing; transform: scale(1.08); }
         .slider-custom::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: ${isDark ? '#fafafa' : '#18181b'}; border: none; cursor: grab; }
-        .scroll-thin::-webkit-scrollbar { width: 4px; }
+        .scroll-thin::-webkit-scrollbar { width: 4px; height: 4px; }
         .scroll-thin::-webkit-scrollbar-track { background: transparent; }
         .scroll-thin::-webkit-scrollbar-thumb { background: ${isDark ? '#27272a' : '#d4d4d8'}; border-radius: 2px; }
       `}</style>
@@ -1348,6 +1531,76 @@ export default function App() {
           overscrollBehavior: 'none',
         }}
       >
+        <Toolbar
+          isDark={isDark}
+          panel={panel}
+          border={border}
+          hover={hover}
+          muted={muted}
+          textSoft={textSoft}
+          textMain={textMain}
+          btnBase={btnBase}
+          inputBg={inputBg}
+          activeTool={activeTool}
+          activePopover={activePopover}
+          shapeMenuOpen={isShapeMenuOpen}
+          hoveredShape={hoveredShape}
+          lastShapeTool={lastShapeTool}
+          pencilTab={pencilTab}
+          pencilSize={pencilSize}
+          eraserSize={eraserSize}
+          shapeSize={shapeSize}
+          isShapeFilled={isShapeFilled}
+          brushType={brushType}
+          selectedColor={selectedColor}
+          hsv={hsv}
+          hexInput={hexInput}
+          rgbInput={rgbInput}
+          satValRef={satValRef}
+          hueRef={hueRef}
+          t={t}
+          onToolClick={(tool) => {
+            if (lassoModeRef.current !== null && tool !== 'lasso') {
+              commitLasso('Lasso');
+            }
+            if (tool === 'eyedropper') {
+              setPrevTool(activeTool === 'eyedropper' ? prevTool : activeTool);
+              setActiveTool(tool);
+              activeToolRef.current = tool;
+              setActivePopover(null);
+              return;
+            }
+            if (tool === 'pencil' || tool === 'eraser') {
+              if (activeTool === tool) setActivePopover(activePopover === tool ? null : tool);
+              else { setActiveTool(tool); activeToolRef.current = tool; setActivePopover(null); }
+              return;
+            }
+            if (tool === 'bucket' || tool === 'hand' || tool === 'lasso') {
+              setActiveTool(tool);
+              activeToolRef.current = tool;
+              setActivePopover(null);
+              return;
+            }
+            if (isShapeTool(tool) && !isShapeMenuOpen) {
+              setActivePopover(activePopover === 'shape' ? null : 'shape');
+            }
+          }}
+          onShapeMouseDown={shapeMouseDown}
+          onShapeHover={(s) => { setHoveredShape(s); hoveredShapeRef.current = s; }}
+          setActivePopover={setActivePopover}
+          setPencilTab={setPencilTab}
+          setPencilSize={setPencilSize}
+          setEraserSize={setEraserSize}
+          setShapeSize={setShapeSize}
+          setIsShapeFilled={setIsShapeFilled}
+          setBrushType={setBrushType}
+          updateFromHsv={updateFromHsv}
+          handleHex={handleHex}
+          handleRgb={handleRgb}
+          onShowPreview={showPreviewAtCanvasCenter}
+          onHidePreview={hidePreview}
+        />
+
         <div
           ref={canvasWrapperRef}
           className="absolute top-0 left-0 origin-top-left will-change-transform"
@@ -1372,6 +1625,44 @@ export default function App() {
           )}
         </div>
       </main>
+
+      <Timeline
+        isDark={isDark}
+        panel={panel}
+        border={border}
+        muted={muted}
+        btnBase={btnBase}
+        layers={layersRef.current}
+        activeLayerId={activeLayerId}
+        frameOrder={frameOrderRef.current}
+        frameMeta={frameMetaRef.current}
+        currentFrame={currentFrame}
+        fps={fps}
+        isPlaying={isPlaying}
+        onionPrev={onionPrev}
+        onionNext={onionNext}
+        onionOpacity={onionOpacity}
+        canvasSize={canvasSize}
+        getFrameCanvas={getFrameCanvasById}
+        timelineVersion={timelineVersion}
+        t={t}
+        onSelectFrame={selectFrame}
+        onSelectLayer={(id) => { setActiveLayerId(id); activeLayerIdRef.current = id; }}
+        onPlayPause={onPlayPause}
+        onStop={onStopPlayback}
+        onFirst={() => selectFrame(0)}
+        onPrev={() => selectFrame(Math.max(0, currentFrameRef.current - 1))}
+        onNext={() => selectFrame(Math.min(frameOrderRef.current.length - 1, currentFrameRef.current + 1))}
+        onLast={() => selectFrame(frameOrderRef.current.length - 1)}
+        onAddFrame={addFrame}
+        onDuplicateFrame={duplicateFrame}
+        onDeleteFrame={deleteFrame}
+        onClearFrame={clearFrame}
+        onSetFps={setFps}
+        onSetOnionPrev={setOnionPrev}
+        onSetOnionNext={setOnionNext}
+        onSetOnionOpacity={setOnionOpacity}
+      />
 
       {(activeTool === 'pencil' || activeTool === 'eraser') && isInsideCanvas && ringSize > 0 && (
         <div
@@ -1398,76 +1689,6 @@ export default function App() {
         }}
       />
 
-      <Toolbar
-        isDark={isDark}
-        panel={panel}
-        border={border}
-        hover={hover}
-        muted={muted}
-        textSoft={textSoft}
-        textMain={textMain}
-        btnBase={btnBase}
-        inputBg={inputBg}
-        activeTool={activeTool}
-        activePopover={activePopover}
-        shapeMenuOpen={isShapeMenuOpen}
-        hoveredShape={hoveredShape}
-        lastShapeTool={lastShapeTool}
-        pencilTab={pencilTab}
-        pencilSize={pencilSize}
-        eraserSize={eraserSize}
-        shapeSize={shapeSize}
-        isShapeFilled={isShapeFilled}
-        brushType={brushType}
-        selectedColor={selectedColor}
-        hsv={hsv}
-        hexInput={hexInput}
-        rgbInput={rgbInput}
-        satValRef={satValRef}
-        hueRef={hueRef}
-        t={t}
-        onToolClick={(tool) => {
-          if (lassoModeRef.current !== null && tool !== 'lasso') {
-            commitLasso('Lasso');
-          }
-          if (tool === 'eyedropper') {
-            setPrevTool(activeTool === 'eyedropper' ? prevTool : activeTool);
-            setActiveTool(tool);
-            activeToolRef.current = tool;
-            setActivePopover(null);
-            return;
-          }
-          if (tool === 'pencil' || tool === 'eraser') {
-            if (activeTool === tool) setActivePopover(activePopover === tool ? null : tool);
-            else { setActiveTool(tool); activeToolRef.current = tool; setActivePopover(null); }
-            return;
-          }
-          if (tool === 'bucket' || tool === 'hand' || tool === 'lasso') {
-            setActiveTool(tool);
-            activeToolRef.current = tool;
-            setActivePopover(null);
-            return;
-          }
-          if (isShapeTool(tool) && !isShapeMenuOpen) {
-            setActivePopover(activePopover === 'shape' ? null : 'shape');
-          }
-        }}
-        onShapeMouseDown={shapeMouseDown}
-        onShapeHover={(s) => { setHoveredShape(s); hoveredShapeRef.current = s; }}
-        setActivePopover={setActivePopover}
-        setPencilTab={setPencilTab}
-        setPencilSize={setPencilSize}
-        setEraserSize={setEraserSize}
-        setShapeSize={setShapeSize}
-        setIsShapeFilled={setIsShapeFilled}
-        setBrushType={setBrushType}
-        updateFromHsv={updateFromHsv}
-        handleHex={handleHex}
-        handleRgb={handleRgb}
-        onShowPreview={showPreviewAtCanvasCenter}
-        onHidePreview={hidePreview}
-      />
-
       {showLayers && (
         <LayersPanel
           isDark={isDark}
@@ -1479,7 +1700,7 @@ export default function App() {
           layers={layersRef.current}
           activeLayerId={activeLayerId}
           thumbsVersion={thumbsVersion}
-          layerCanvases={layerCanvasesRef.current}
+          layerCanvases={currentFrameLayerCanvases}
           canvasSize={canvasSize}
           t={t}
           onSelect={(id) => { setActiveLayerId(id); activeLayerIdRef.current = id; }}

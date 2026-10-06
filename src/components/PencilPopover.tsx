@@ -32,7 +32,7 @@ export default function PencilPopover({
   const [expanded, setExpanded] = useState<string | null>('basic');
 
   return (
-    <div className="flex items-start gap-1.5 absolute left-11 top-0 z-40">
+    <div className="absolute left-[68px] top-0 z-50 flex items-start gap-1.5">
       <div className={`${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl p-2 shadow-2xl w-52`}>
         <div className="flex items-center gap-0.5 mb-2.5 px-0.5">
           <button
@@ -76,7 +76,7 @@ export default function PencilPopover({
       </div>
 
       {tab === 'brush' && (
-        <div className={`${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl shadow-2xl w-[210px] max-h-[460px] overflow-y-auto scroll-thin`}>
+        <div className={`${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl shadow-2xl w-[210px] max-h-[400px] overflow-y-auto scroll-thin`}>
           {GROUPS.map(g => (
             <div key={g.key} className={`border-b last:border-b-0 ${isDark ? 'border-[#1f1f22]' : 'border-zinc-100'}`}>
               <button

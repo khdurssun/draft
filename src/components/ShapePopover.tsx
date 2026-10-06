@@ -17,7 +17,7 @@ export default function ShapePopover({
   setShapeSize, setIsShapeFilled, t,
 }: Props) {
   return (
-    <div className={`absolute left-11 top-0 ${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl p-3 shadow-2xl w-52 z-40`}>
+    <div className={`absolute top-full left-0 mt-1.5 ${isDark ? 'bg-[#0f0f10]' : 'bg-white'} border ${border} rounded-xl p-3 shadow-2xl w-52 z-50`}>
       <div className={`flex justify-between text-[11px] mb-2 ${muted}`}>
         <span>{t('size')}</span>
         <span className="font-mono tabular-nums">{shapeSize}px</span>

@@ -1,22 +1,20 @@
-export type Tool = 'pencil' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'eraser' | 'bucket' | 'hand' | 'lasso' | 'eyedropper';
-export type ShapeTool = 'line' | 'rectangle' | 'circle' | 'triangle';
+export type Tool = 'pencil' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'star' | 'eraser' | 'bucket' | 'hand' | 'lasso' | 'eyedropper';
+export type ShapeTool = 'line' | 'rectangle' | 'circle' | 'triangle' | 'star';
 export type Theme = 'light' | 'dark';
 export type Lang = 'en' | 'ru';
 
 export type BrushType =
-  // basic
   | 'round' | 'pencil' | 'marker' | 'ink' | 'calligraphy'
-  // soft
   | 'airbrush' | 'glow' | 'watercolor' | 'neon'
   | 'mist' | 'smoke' | 'cloud' | 'aurora' | 'fog'
-  // textured
   | 'spray' | 'chalk' | 'charcoal' | 'crayon' | 'bristle'
   | 'oil' | 'pastel' | 'sand' | 'rust' | 'concrete' | 'wood' | 'fabric'
-  // special
   | 'sparkle' | 'stars' | 'confetti' | 'bubbles' | 'glitter'
   | 'frost' | 'splatter' | 'vine' | 'leaves'
-  // grand
-  | 'mosaic' | 'rings' | 'web' | 'flame' | 'galaxy';
+  | 'mosaic' | 'rings' | 'web' | 'flame' | 'galaxy'
+  | 'square';
+
+export type EraserShape = 'round' | 'square';
 
 export interface Point { x: number; y: number; }
 
@@ -28,6 +26,7 @@ export interface FreehandStroke {
   pressures?: number[];
   color: string;
   size: number;
+  opacity?: number;
 }
 export interface ShapeAction {
   type: 'shape';
@@ -38,8 +37,15 @@ export interface ShapeAction {
   size: number;
   isFilled: boolean;
   shiftKey?: boolean;
+  brush?: BrushType;
 }
-export interface FillAction { type: 'fill'; x: number; y: number; color: string; }
+export interface FillAction {
+  type: 'fill';
+  x: number;
+  y: number;
+  color: string;
+  opacity?: number;
+}
 export interface LassoAction {
   type: 'lasso';
   polygon: Point[];
@@ -58,10 +64,6 @@ export interface LayerMeta {
   locked: boolean;
 }
 
-/**
- * Регион canvas: ImageData + смещение, куда его класть через putImageData.
- * Используется в history вместо полного snapshot canvas.
- */
 export interface HistoryRegion {
   data: ImageData;
   x: number;
@@ -74,4 +76,45 @@ export interface HistoryEntry {
   before: HistoryRegion | null;
   after: HistoryRegion | null;
   label: string;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * .draft file format
+ * ─────────────────────────────────────────────────────────────────
+ * JSON-контейнер. Все canvas-ы сериализуются как base64 PNG.
+ */
+export interface DraftLayerData {
+  id: string;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+}
+
+export interface DraftFrameMeta {
+  id: string;
+  duration: number;
+}
+
+export interface DraftProjectData {
+  format: 'zuno-draft';
+  version: 1;
+  savedAt: string;
+  canvasSize: { w: number; h: number };
+  canvasBg: string;
+  /** Порядок кадров. */
+  frameOrder: string[];
+  /** Метаданные кадров. */
+  frameMeta: DraftFrameMeta[];
+  /** Слои (порядок от нижнего к верхнему). */
+  layers: DraftLayerData[];
+  /** Активный слой. */
+  activeLayerId: string;
+  /** Индекс активного кадра. */
+  currentFrame: number;
+  /** FPS для воспроизведения. */
+  fps: number;
+  /** Настройки onion skin. */
+  onion: { prev: number; next: number; opacity: number };
+  /** Canvas-ы: layerId → frameId → base64 data URL. */
+  canvases: Record<string, Record<string, string>>;
 }

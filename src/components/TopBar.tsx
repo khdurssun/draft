@@ -2,16 +2,14 @@ import {
   ChevronRight,
   Layers as LayersIcon,
   Settings as SettingsIcon,
-  Maximize2,
-  Minimize2,
+  Play as PlayIcon,
+  ImagePlus,
 } from 'lucide-react';
 import type { TKey } from '../i18n/translations';
 
 interface Props {
   isDark: boolean;
-  isFullscreen: boolean;
-  activeMenu: 'file' | null;
-  exportOpen: boolean;
+  activeMenu: 'file' | 'render' | null;
   showLayers?: boolean;
   panel: string;
   border: string;
@@ -19,21 +17,31 @@ interface Props {
   hover: string;
   btnBase: string;
   t: (k: TKey) => string;
-  onToggleMenu: () => void;
-  onToggleFullscreen: () => void;
+
+  /* Hover-подменю для Render */
+  renderImageOpen: boolean;
+  renderAnimOpen: boolean;
+
+  /* Доступность форматов */
+  mp4Supported: boolean;
+
+  /* Actions */
+  onToggleMenu: (menu: 'file' | 'render' | null) => void;
   onToggleLayers: () => void;
   onOpenSettings: () => void;
   onOpenNewProject: () => void;
-  onOpenImage: () => void;
-  onSetExportOpen: (v: boolean) => void;
-  onExport: (fmt: 'png' | 'jpeg', onlyActive?: boolean) => void;
+  onSaveProject: () => void;
+  onOpenProject: () => void;
+  onOpenImageLayer: () => void;
+  onRenderImage: (fmt: 'png' | 'jpeg') => void;
+  onRenderAnimation: (fmt: 'webm' | 'mp4' | 'gif') => void;
+  onSetRenderImageOpen: (v: boolean) => void;
+  onSetRenderAnimOpen: (v: boolean) => void;
 }
 
 export default function TopBar({
   isDark,
-  isFullscreen,
   activeMenu,
-  exportOpen,
   showLayers = false,
   panel,
   border,
@@ -41,14 +49,20 @@ export default function TopBar({
   hover,
   btnBase,
   t,
+  renderImageOpen,
+  renderAnimOpen,
+  mp4Supported,
   onToggleMenu,
-  onToggleFullscreen,
   onToggleLayers,
   onOpenSettings,
   onOpenNewProject,
-  onOpenImage,
-  onSetExportOpen,
-  onExport,
+  onSaveProject,
+  onOpenProject,
+  onOpenImageLayer,
+  onRenderImage,
+  onRenderAnimation,
+  onSetRenderImageOpen,
+  onSetRenderAnimOpen,
 }: Props) {
   return (
     <div
@@ -59,7 +73,7 @@ export default function TopBar({
         <button
           onPointerDown={(e) => {
             e.stopPropagation();
-            onToggleMenu();
+            onToggleMenu(activeMenu === 'file' ? null : 'file');
           }}
           className={`px-2 py-1 rounded text-xs transition-colors ${
             activeMenu === 'file'
@@ -72,6 +86,23 @@ export default function TopBar({
           {t('file')}
         </button>
 
+        <button
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onToggleMenu(activeMenu === 'render' ? null : 'render');
+          }}
+          className={`px-2 py-1 rounded text-xs transition-colors flex items-center gap-1 ${
+            activeMenu === 'render'
+              ? isDark
+                ? 'bg-zinc-800 text-zinc-100 font-medium'
+                : 'bg-zinc-200 text-zinc-900 font-medium'
+              : `${textSoft}${hover}`
+          }`}
+        >
+          <PlayIcon className="w-3 h-3" strokeWidth={2} />
+          {t('render')}
+        </button>
+
         <span className="text-[11px] font-mono opacity-40 select-none">
           v0.7.2-alpha
         </span>
@@ -79,15 +110,11 @@ export default function TopBar({
 
       <div className="ml-auto flex items-center gap-0.5">
         <button
-          onClick={onToggleFullscreen}
+          onClick={onOpenImageLayer}
           className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${btnBase}`}
-          title={isFullscreen ? 'Minimize' : 'Maximize'}
+          title="Import image"
         >
-          {isFullscreen ? (
-            <Minimize2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-          ) : (
-            <Maximize2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-          )}
+          <ImagePlus className="w-3.5 h-3.5" strokeWidth={1.5} />
         </button>
 
         <button
@@ -113,42 +140,75 @@ export default function TopBar({
         </button>
       </div>
 
+      {/* ─── File menu ─── */}
       {activeMenu === 'file' && (
         <div
-          className={`absolute top-full left-2 ${panel} border ${border} rounded-md shadow-lg py-1 z-[90] mt-1 w-48`}
+          className={`absolute top-full left-2 ${panel} border ${border} rounded-md shadow-lg py-1 z-[90] mt-1 w-52`}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <MenuItem label={t('newProject')} onClick={onOpenNewProject} isDark={isDark} />
-          <MenuItem label={t('openImage')} onClick={onOpenImage} isDark={isDark} />
+          <MenuItem label={t('saveProject')} onClick={onSaveProject} isDark={isDark} />
+          <MenuItem label={t('openProject')} onClick={onOpenProject} isDark={isDark} />
+        </div>
+      )}
 
-          <div className={`h-px my-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
-
+      {/* ─── Render menu ─── */}
+      {activeMenu === 'render' && (
+        <div
+          className={`absolute top-full left-20 ${panel} border ${border} rounded-md shadow-lg py-1 z-[90] mt-1 w-48`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerLeave={() => {
+            onSetRenderImageOpen(false);
+            onSetRenderAnimOpen(false);
+          }}
+        >
+          {/* Image ▸ */}
           <div
             className="relative"
-            onPointerEnter={() => onSetExportOpen(true)}
-            onPointerLeave={() => onSetExportOpen(false)}
+            onPointerEnter={() => {
+              onSetRenderImageOpen(true);
+              onSetRenderAnimOpen(false);
+            }}
           >
             <MenuItem
-              label={t('export')}
+              label={t('image')}
               right={<ChevronRight className="w-3 h-3 opacity-50" />}
               isDark={isDark}
             />
-
-            {exportOpen && (
+            {renderImageOpen && (
               <div
-                className={`absolute left-full top-0 ${panel} border ${border} rounded-md shadow-lg py-1 w-44 -ml-1`}
-                onPointerEnter={() => onSetExportOpen(true)}
+                className={`absolute left-full top-0 ${panel} border ${border} rounded-md shadow-lg py-1 w-40 -ml-1`}
+                onPointerEnter={() => onSetRenderImageOpen(true)}
               >
-                <MenuItem label="PNG" onClick={() => onExport('png')} isDark={isDark} />
-                <MenuItem label="JPEG" onClick={() => onExport('jpeg')} isDark={isDark} />
+                <MenuItem label="PNG" onClick={() => onRenderImage('png')} isDark={isDark} />
+                <MenuItem label="JPEG" onClick={() => onRenderImage('jpeg')} isDark={isDark} />
+              </div>
+            )}
+          </div>
 
-                <div className={`h-px my-1 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
-
-                <MenuItem
-                  label={`${t('exportLayer')} (PNG)`}
-                  onClick={() => onExport('png', true)}
-                  isDark={isDark}
-                />
+          {/* Animation ▸ */}
+          <div
+            className="relative"
+            onPointerEnter={() => {
+              onSetRenderAnimOpen(true);
+              onSetRenderImageOpen(false);
+            }}
+          >
+            <MenuItem
+              label={t('animation')}
+              right={<ChevronRight className="w-3 h-3 opacity-50" />}
+              isDark={isDark}
+            />
+            {renderAnimOpen && (
+              <div
+                className={`absolute left-full top-0 ${panel} border ${border} rounded-md shadow-lg py-1 w-40 -ml-1`}
+                onPointerEnter={() => onSetRenderAnimOpen(true)}
+              >
+                <MenuItem label={t('webm')} onClick={() => onRenderAnimation('webm')} isDark={isDark} />
+                {mp4Supported && (
+                  <MenuItem label={t('mp4')} onClick={() => onRenderAnimation('mp4')} isDark={isDark} />
+                )}
+                <MenuItem label={t('gif')} onClick={() => onRenderAnimation('gif')} isDark={isDark} />
               </div>
             )}
           </div>

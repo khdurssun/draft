@@ -1,6 +1,7 @@
 export const T = {
   en: {
     file: 'File', newProject: 'New Project', openImage: 'Open Image', export: 'Export',
+    saveProject: 'Save Project', openProject: 'Open Project',
     layers: 'Layers', settings: 'Settings', size: 'Size', brushes: 'Brushes',
     canvasColor: 'Canvas color', canvasDesc: 'Default canvas background',
     viewportColor: 'Viewport color', viewportDesc: 'Area around the canvas',
@@ -8,9 +9,20 @@ export const T = {
     presets: 'Presets', custom: 'Custom size', cancel: 'Cancel', create: 'Create',
     newLayer: 'New layer', deleteLayer: 'Delete', lock: 'Lock', unlock: 'Unlock',
     show: 'Show', hide: 'Hide', filled: 'Filled', outline: 'Outline',
-    line: 'Line', square: 'Square', circle: 'Circle', triangle: 'Triangle',
+    line: 'Line', square: 'Square', circle: 'Circle', triangle: 'Triangle', star: 'Star',
     eyedropper: 'Eyedropper', bucket: 'Bucket', lasso: 'Lasso', hand: 'Hand', eraser: 'Eraser',
     auto: 'Auto', exportLayer: 'Export current layer',
+
+    // render
+    render: 'Render',
+    image: 'Image',
+    animation: 'Animation',
+    format: 'Format',
+    webm: 'WebM',
+    mp4: 'MP4',
+    gif: 'GIF',
+    rendering: 'Rendering…',
+    exportingAnimation: 'Exporting animation…',
 
     // basic
     bRound: 'Round', bPencil: 'Pencil', bMarker: 'Marker', bInk: 'Ink', bCalligraphy: 'Calligraphy',
@@ -40,9 +52,16 @@ export const T = {
     // timeline hints
     scrollHint: 'Scroll to navigate',
     newFrameHint: 'New',
+
+    // tools extra
+    opacity: 'Opacity',
+    eraserShape: 'Shape',
+    eraserRound: 'Round',
+    eraserSquare: 'Square',
   },
   ru: {
     file: 'Файл', newProject: 'Новый проект', openImage: 'Открыть изображение', export: 'Экспорт',
+    saveProject: 'Сохранить проект', openProject: 'Открыть проект',
     layers: 'Слои', settings: 'Настройки', size: 'Размер', brushes: 'Кисти',
     canvasColor: 'Цвет холста', canvasDesc: 'Фон холста по умолчанию',
     viewportColor: 'Цвет фона', viewportDesc: 'Область вокруг холста',
@@ -50,9 +69,20 @@ export const T = {
     presets: 'Пресеты', custom: 'Свой размер', cancel: 'Отмена', create: 'Создать',
     newLayer: 'Новый слой', deleteLayer: 'Удалить', lock: 'Заблокировать', unlock: 'Разблокировать',
     show: 'Показать', hide: 'Скрыть', filled: 'Заливка', outline: 'Контур',
-    line: 'Линия', square: 'Квадрат', circle: 'Круг', triangle: 'Треугольник',
+    line: 'Линия', square: 'Квадрат', circle: 'Круг', triangle: 'Треугольник', star: 'Звезда',
     eyedropper: 'Пипетка', bucket: 'Заливка', lasso: 'Лассо', hand: 'Рука', eraser: 'Ластик',
     auto: 'Авто', exportLayer: 'Экспорт текущего слоя',
+
+    // render
+    render: 'Рендер',
+    image: 'Изображение',
+    animation: 'Анимация',
+    format: 'Формат',
+    webm: 'WebM',
+    mp4: 'MP4',
+    gif: 'GIF',
+    rendering: 'Рендеринг…',
+    exportingAnimation: 'Экспорт анимации…',
 
     // basic
     bRound: 'Круглая', bPencil: 'Карандаш', bMarker: 'Маркер', bInk: 'Тушь', bCalligraphy: 'Каллиграфия',
@@ -82,6 +112,12 @@ export const T = {
     // timeline hints
     scrollHint: 'Колесо — прокрутка',
     newFrameHint: 'Новый',
+
+    // tools extra
+    opacity: 'Прозрачность',
+    eraserShape: 'Форма',
+    eraserRound: 'Круг',
+    eraserSquare: 'Квадрат',
   },
 };
 

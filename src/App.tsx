@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { T } from './i18n/translations';
-import type { Tool, ShapeTool, Theme, Lang, BrushType, Point, LayerMeta, HistoryEntry } from './lib/types';
+import type { Tool, ShapeTool, Theme, Lang, BrushType, Point, LayerMeta, HistoryEntry, EraserShape } from './lib/types';
 import { hexToRgb, rgbToHex, rgbToHsv, hsvToRgb } from './lib/color';
 import { uid } from './lib/constants';
 import type { AnimationFrame } from './animation/types';
@@ -10,19 +10,26 @@ import { usePointerInput } from './hooks/usePointerInput';
 import { createEmptyCanvas, createFrame } from './animation/frameManager';
 import { usePlayback } from './animation/playback';
 import { drawOnionSkin } from './animation/onionSkin';
+import { isVideoFormatSupported } from './lib/projectIO';
 import TopBar from './components/TopBar';
 import Toolbar from './components/Toolbar';
 import LayersPanel from './components/LayersPanel';
 import SettingsModal from './components/SettingsModal';
 import NewProjectModal from './components/NewProjectModal';
 import Timeline from './components/Timeline';
+import ImageTransformOverlay, { type ImageTransform } from './components/ImageTransformOverlay';
+
+type ActiveMenu = 'file' | 'render' | null;
 
 export default function App() {
   /* ─── State ─── */
   const [theme, setTheme] = useState<Theme>('dark');
   const [lang, setLang] = useState<Lang>('en');
-  const [activeMenu, setActiveMenu] = useState<'file' | null>(null);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [activeMenu, setActiveMenu] = useState<ActiveMenu>(null);
+  const [renderImageOpen, setRenderImageOpen] = useState(false);
+  const [renderAnimOpen, setRenderAnimOpen] = useState(false);
+  const [mp4Supported] = useState<boolean>(() => isVideoFormatSupported('mp4'));
+
   const [showNewProject, setShowNewProject] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showLayers, setShowLayers] = useState(false);
@@ -38,13 +45,15 @@ export default function App() {
   const [hoveredShape, setHoveredShape] = useState<ShapeTool | null>(null);
 
   const [pencilSize, setPencilSize] = useState(6);
+  const [brushOpacity, setBrushOpacity] = useState(1);
   const [eraserSize, setEraserSize] = useState(24);
-  const [shapeSize, setShapeSize] = useState(4);
+  const [eraserShape, setEraserShape] = useState<EraserShape>('round');
   const [isShapeFilled, setIsShapeFilled] = useState(false);
+  const [fillOpacity, setFillOpacity] = useState(1);
   const [selectedColor, setSelectedColor] = useState('#1E293B');
   const [brushType, setBrushType] = useState<BrushType>('round');
 
-  const [activePopover, setActivePopover] = useState<'pencil' | 'eraser' | 'shape' | 'color' | null>(null);
+  const [activePopover, setActivePopover] = useState<'pencil' | 'eraser' | 'shape' | 'color' | 'bucket' | null>(null);
   const [pencilTab, setPencilTab] = useState<'size' | 'brush'>('size');
 
   const [hsv, setHsv] = useState({ h: 215, s: 80, v: 23 });
@@ -56,8 +65,10 @@ export default function App() {
   const [thumbsVersion, setThumbsVersion] = useState(0);
   const [timelineVersion, setTimelineVersion] = useState(0);
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [hasSelection, setHasSelection] = useState(false);
+
+  /* ─── Image layer transform ─── */
+  const [imageTransform, setImageTransform] = useState<ImageTransform | null>(null);
 
   /* ─── Animation state ─── */
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -74,7 +85,6 @@ export default function App() {
   const redoRef = useRef<HistoryEntry[]>([]);
   const lastActiveLayerIdRef = useRef<string>('');
 
-  // Animation refs
   const framesRef = useRef<Map<string, Map<string, HTMLCanvasElement>>>(new Map());
   const frameOrderRef = useRef<string[]>([]);
   const frameMetaRef = useRef<Map<string, AnimationFrame>>(new Map());
@@ -88,18 +98,20 @@ export default function App() {
     opacity: 0.3,
   });
 
-  // Refs, общие для App.tsx / useProjectOps / usePointerInput / JSX
   const panRef = useRef<Point>({ x: 0, y: 0 });
   const activeToolRef = useRef<Tool>('pencil');
   const selectedColorRef = useRef<string>('#1E293B');
   const pencilSizeRef = useRef(6);
+  const brushOpacityRef = useRef(1);
   const eraserSizeRef = useRef(24);
-  const shapeSizeRef = useRef(4);
+  const eraserShapeRef = useRef<EraserShape>('round');
   const isShapeFilledRef = useRef(false);
   const brushTypeRef = useRef<BrushType>('round');
+  const fillOpacityRef = useRef(1);
   const zoomRef = useRef(0.85);
   const canvasBgRef = useRef('#FFFFFF');
   const canvasSizeRef = useRef({ w: 794, h: 1123 });
+  const lastShapeToolRef = useRef<ShapeTool>('rectangle');
 
   const shapeHoldTimerRef = useRef<number | null>(null);
   const shapePressActiveRef = useRef(false);
@@ -122,6 +134,7 @@ export default function App() {
   const satValRef = useRef<HTMLCanvasElement>(null);
   const hueRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectInputRef = useRef<HTMLInputElement>(null);
 
   const cursorRingRef = useRef<HTMLDivElement>(null);
   const previewCircleRef = useRef<HTMLDivElement>(null);
@@ -129,23 +142,32 @@ export default function App() {
   const previewSizeRef = useRef<number | null>(null);
   const previewActiveRef = useRef(false);
 
+  const hasImageTransformRef = useRef(false);
+  useEffect(() => {
+    hasImageTransformRef.current = imageTransform !== null;
+  }, [imageTransform]);
+
   const isDark = theme === 'dark';
   const isShapeTool = (tl: Tool): tl is ShapeTool =>
-    tl === 'line' || tl === 'rectangle' || tl === 'circle' || tl === 'triangle';
+    tl === 'line' || tl === 'rectangle' || tl === 'circle' ||
+    tl === 'triangle' || tl === 'star';
 
   /* ─── Sync refs ─── */
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
   useEffect(() => { selectedColorRef.current = selectedColor; }, [selectedColor]);
   useEffect(() => { pencilSizeRef.current = pencilSize; }, [pencilSize]);
+  useEffect(() => { brushOpacityRef.current = brushOpacity; }, [brushOpacity]);
   useEffect(() => { eraserSizeRef.current = eraserSize; }, [eraserSize]);
-  useEffect(() => { shapeSizeRef.current = shapeSize; }, [shapeSize]);
+  useEffect(() => { eraserShapeRef.current = eraserShape; }, [eraserShape]);
   useEffect(() => { isShapeFilledRef.current = isShapeFilled; }, [isShapeFilled]);
   useEffect(() => { brushTypeRef.current = brushType; }, [brushType]);
+  useEffect(() => { fillOpacityRef.current = fillOpacity; }, [fillOpacity]);
   useEffect(() => { activeLayerIdRef.current = activeLayerId; }, [activeLayerId]);
   useEffect(() => { canvasBgRef.current = canvasBg; }, [canvasBg]);
   useEffect(() => { canvasSizeRef.current = canvasSize; }, [canvasSize]);
   useEffect(() => { currentFrameRef.current = currentFrame; }, [currentFrame]);
   useEffect(() => { fpsRef.current = fps; }, [fps]);
+  useEffect(() => { lastShapeToolRef.current = lastShapeTool; }, [lastShapeTool]);
   useEffect(() => {
     onionSettingsRef.current = {
       enabled: true,
@@ -183,7 +205,6 @@ export default function App() {
   const bumpThumbs = useCallback(() => setThumbsVersion(v => v + 1), []);
   const bumpTimeline = useCallback(() => setTimelineVersion(v => v + 1), []);
 
-  /* ─── Frame access helpers ─── */
   const getFrameCanvasById = useCallback((layerId: string, frameId: string): HTMLCanvasElement | null => {
     return framesRef.current.get(layerId)?.get(frameId) ?? null;
   }, []);
@@ -192,7 +213,6 @@ export default function App() {
     return frameOrderRef.current[currentFrameRef.current] ?? null;
   }, []);
 
-  /* ─── Composite render ─── */
   const renderComposite = useCallback(() => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
@@ -258,7 +278,6 @@ export default function App() {
   useEffect(() => { renderComposite(); }, [canvasBg, layersVersion, renderComposite]);
   useEffect(() => { renderComposite(); }, [currentFrame, onionPrev, onionNext, onionOpacity, renderComposite]);
 
-  /* ─── History (snapshot / push / undo / redo / lasso) ─── */
   const {
     snapshot,
     pushHistory,
@@ -288,7 +307,105 @@ export default function App() {
     setHasSelection,
   });
 
-  /* ─── Project operations: layers / frames / playback / IO ─── */
+  /* ─── Image transform commit/cancel ─── */
+  const onCommitImageTransform = useCallback(() => {
+    const t = imageTransform;
+    if (!t) return;
+    const lid = activeLayerIdRef.current;
+    const fid = frameOrderRef.current[currentFrameRef.current];
+    if (!lid || !fid) {
+      setImageTransform(null);
+      hasImageTransformRef.current = false;
+      return;
+    }
+    const layer = (() => {
+      for (const l of layersRef.current) if (l.id === lid) return l;
+      return null;
+    })();
+    if (!layer || layer.locked || !layer.visible) {
+      setImageTransform(null);
+      hasImageTransformRef.current = false;
+      return;
+    }
+    const lc = framesRef.current.get(lid)?.get(fid);
+    if (!lc) {
+      setImageTransform(null);
+      hasImageTransformRef.current = false;
+      return;
+    }
+    const ctx = lc.getContext('2d');
+    if (!ctx) {
+      setImageTransform(null);
+      hasImageTransformRef.current = false;
+      return;
+    }
+
+    const before = snapshot(lid, fid);
+    ctx.drawImage(t.canvas, t.x, t.y, t.w, t.h);
+    const after = snapshot(lid, fid);
+    if (before && after) pushHistory(lid, fid, before, after, 'Import image');
+
+    setImageTransform(null);
+    hasImageTransformRef.current = false;
+    renderComposite();
+    bumpThumbs(); bumpTimeline();
+  }, [
+    imageTransform, layersRef, framesRef, frameOrderRef, currentFrameRef,
+    snapshot, pushHistory, renderComposite, bumpThumbs, bumpTimeline,
+  ]);
+
+  const onCancelImageTransform = useCallback(() => {
+    setImageTransform(null);
+    hasImageTransformRef.current = false;
+  }, []);
+
+  /* ─── Image loaded (через useProjectOps → onImageLoaded) ─── */
+  const onImageLoaded = useCallback((img: HTMLImageElement) => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth || img.width || 1;
+    c.height = img.naturalHeight || img.height || 1;
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.drawImage(img, 0, 0);
+
+    const { w, h } = canvasSizeRef.current;
+    const scale = Math.min(w / c.width, h / c.height);
+    const dw = c.width * scale;
+    const dh = c.height * scale;
+
+    setImageTransform({
+      canvas: c,
+      x: (w - dw) / 2,
+      y: (h - dh) / 2,
+      w: dw,
+      h: dh,
+    });
+    hasImageTransformRef.current = true;
+    setShowLayers(false);
+  }, []);
+
+  /* ─── Hotkeys ─── */
+  const onToolShortcut = useCallback((tool: Tool) => {
+    if (lassoModeRef.current !== null && tool !== 'lasso') {
+      commitLasso('Lasso');
+    }
+    setActivePopover(null);
+    setIsShapeMenuOpen(false);
+    if (isShapeTool(tool)) {
+      setLastShapeTool(tool);
+      lastShapeToolRef.current = tool;
+    }
+    if (tool === 'eyedropper') {
+      setPrevTool(activeTool === 'eyedropper' ? prevTool : activeTool);
+    }
+    setActiveTool(tool);
+    activeToolRef.current = tool;
+  }, [activeTool, prevTool, commitLasso, isShapeTool]);
+
+  const onNewProjectShortcut = useCallback(() => {
+    setShowNewProject(true);
+    setActiveMenu(null);
+  }, []);
+
   const {
     findLayer,
     addLayer,
@@ -303,7 +420,10 @@ export default function App() {
     advanceFrame,
     onPlayPause,
     onStopPlayback,
-    exportImg,
+    renderImage,
+    renderAnimation,
+    saveProject,
+    openProject,
     handleOpenProject,
     createNewProject,
   } = useProjectOps({
@@ -325,14 +445,21 @@ export default function App() {
     zoomRef,
     panRef,
     fileInputRef,
+    projectInputRef,
     lassoModeRef,
+    fpsRef,
+    onionSettingsRef,
     setActiveLayerId,
     setCurrentFrame,
     setCanvasSize,
+    setCanvasBg,
     setIsPlaying,
     setShowNewProject,
     setActiveMenu,
-    setExportOpen,
+    setFps,
+    setOnionPrev,
+    setOnionNext,
+    setOnionOpacity,
     bumpLayers,
     bumpThumbs,
     bumpTimeline,
@@ -342,9 +469,9 @@ export default function App() {
     renderComposite,
     getCurrentFrameId,
     getFrameCanvasById,
+    onImageLoaded,
   });
 
-  /* ─── Pointer / keyboard / overlay input ─── */
   const {
     onWheel,
     onPointerDown,
@@ -352,20 +479,28 @@ export default function App() {
     onPointerUp,
     onPointerCancel,
   } = usePointerInput({
-    activeToolRef, selectedColorRef, pencilSizeRef, eraserSizeRef, shapeSizeRef,
-    isShapeFilledRef, brushTypeRef, zoomRef, panRef, canvasSizeRef,
+    activeToolRef, selectedColorRef, pencilSizeRef, eraserSizeRef,
+    isShapeFilledRef, brushTypeRef, brushOpacityRef, eraserShapeRef, fillOpacityRef,
+    zoomRef, panRef, canvasSizeRef,
     activeLayerIdRef, frameOrderRef, currentFrameRef,
     baseCanvasRef, overlayCanvasRef, canvasWrapperRef, containerRef,
     cursorRingRef, previewCircleRef, previewSizeRef, previewActiveRef,
     lassoPathRef, lassoPolyRef, lassoBufferRef, lassoBBoxRef, lassoOffsetRef,
     lassoModeRef, lassoMoveStartRef, lassoPreSnapshotRef,
     prevTool,
+    lastShapeToolRef,
+    hasImageTransformRef,
     renderComposite, getCurrentFrameId, getFrameCanvasById,
     findLayer, selectFrame, addFrame, deleteFrame, bumpThumbs, bumpTimeline,
     snapshot, pushHistory, commitLasso, cancelLasso, clearLassoState, undo, redo,
+    onCommitImageTransform,
+    onCancelImageTransform,
+    onToolShortcut,
+    onNewProjectShortcut,
     setSelectedColor, setHexInput, setRgbInput, setHsv, setActiveTool,
     setActiveMenu, setActivePopover, setIsShapeMenuOpen,
-    setShowSettings, setShowNewProject, setExportOpen, setHasSelection,
+    setShowSettings, setShowNewProject, setExportOpen: () => {},
+    setHasSelection,
     onTogglePlayback: onPlayPause,
   });
 
@@ -376,7 +511,6 @@ export default function App() {
     }
   }, [activeLayerId, commitLasso]);
 
-  /* ─── Playback (advanceFrame / onPlayPause / onStopPlayback из useProjectOps) ─── */
   usePlayback({
     isPlaying,
     fpsRef,
@@ -443,19 +577,7 @@ export default function App() {
     previewActiveRef.current = false;
   }, []);
 
-  /* ─── Fullscreen ─── */
-  useEffect(() => {
-    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onFs);
-    return () => document.removeEventListener('fullscreenchange', onFs);
-  }, []);
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
-    else document.exitFullscreen().catch(() => {});
-  };
-
-  /* ─── Shape hold (long-press menu для Toolbar) ─── */
+  /* ─── Shape hold ─── */
   const shapeMouseDown = () => {
     shapePressActiveRef.current = true;
     shapeWasMenuOpenedRef.current = false;
@@ -478,15 +600,18 @@ export default function App() {
       if (shapeWasMenuOpenedRef.current) {
         if (hoveredShapeRef.current) {
           const s = hoveredShapeRef.current;
+          setActivePopover(null);
           setActiveTool(s);
           activeToolRef.current = s;
           setLastShapeTool(s);
+          lastShapeToolRef.current = s;
         }
         setIsShapeMenuOpen(false);
         setHoveredShape(null);
         hoveredShapeRef.current = null;
         shapeWasMenuOpenedRef.current = false;
       } else if (shapePressActiveRef.current) {
+        setActivePopover(null);
         setActiveTool(lastShapeTool);
         activeToolRef.current = lastShapeTool;
       }
@@ -523,15 +648,34 @@ export default function App() {
       const target = e.target as HTMLElement;
       if (target.closest('[data-menu]')) return;
       setActiveMenu(null);
-      setExportOpen(false);
+      setRenderImageOpen(false);
+      setRenderAnimOpen(false);
     };
     window.addEventListener('pointerdown', close);
     return () => window.removeEventListener('pointerdown', close);
   }, [activeMenu]);
 
+  /* ─── Drop image onto canvas ─── */
+  const onMainDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (imageTransform) return;
+    const file = e.dataTransfer.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => onImageLoaded(img);
+      img.src = ev.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  }, [imageTransform, onImageLoaded]);
+
+  const onMainDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  }, []);
+
   const t = (key: keyof typeof T.en) => T[lang][key];
 
-  /* ─── Derived map для LayersPanel ─── */
   const currentFrameLayerCanvases = useMemo(() => {
     const map = new Map<string, HTMLCanvasElement>();
     const fid = frameOrderRef.current[currentFrame];
@@ -544,7 +688,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFrame, layersVersion, thumbsVersion]);
 
-  /* ─── Theme tokens ─── */
   const bg = isDark ? 'bg-[#0a0a0b]' : 'bg-[#f4f4f5]';
   const panel = isDark ? 'bg-[#0f0f10]' : 'bg-white';
   const hover = isDark ? 'hover:bg-[#18181b]' : 'hover:bg-zinc-50';
@@ -576,9 +719,7 @@ export default function App() {
 
       <TopBar
         isDark={isDark}
-        isFullscreen={isFullscreen}
         activeMenu={activeMenu}
-        exportOpen={exportOpen}
         showLayers={showLayers}
         panel={panel}
         border={border}
@@ -586,17 +727,24 @@ export default function App() {
         hover={hover}
         btnBase={btnBase}
         t={t}
-        onToggleMenu={() => {
-          setActiveMenu(activeMenu === 'file' ? null : 'file');
-          setExportOpen(false);
+        renderImageOpen={renderImageOpen}
+        renderAnimOpen={renderAnimOpen}
+        mp4Supported={mp4Supported}
+        onToggleMenu={(menu) => {
+          setActiveMenu(menu);
+          setRenderImageOpen(false);
+          setRenderAnimOpen(false);
         }}
-        onToggleFullscreen={toggleFullscreen}
         onToggleLayers={() => setShowLayers(s => !s)}
         onOpenSettings={() => setShowSettings(true)}
         onOpenNewProject={() => { setShowNewProject(true); setActiveMenu(null); }}
-        onOpenImage={() => { fileInputRef.current?.click(); setActiveMenu(null); }}
-        onSetExportOpen={setExportOpen}
-        onExport={exportImg}
+        onSaveProject={saveProject}
+        onOpenProject={() => { projectInputRef.current?.click(); setActiveMenu(null); }}
+        onOpenImageLayer={() => { fileInputRef.current?.click(); setActiveMenu(null); }}
+        onRenderImage={renderImage}
+        onRenderAnimation={renderAnimation}
+        onSetRenderImageOpen={setRenderImageOpen}
+        onSetRenderAnimOpen={setRenderAnimOpen}
       />
 
       <input
@@ -607,6 +755,14 @@ export default function App() {
         className="hidden"
       />
 
+      <input
+        ref={projectInputRef}
+        type="file"
+        accept=".draft,application/json"
+        onChange={openProject}
+        className="hidden"
+      />
+
       <main
         ref={containerRef}
         onWheel={onWheel}
@@ -614,9 +770,9 @@ export default function App() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
-        onPointerLeave={() => setIsInsideCanvas(false)}
-        onPointerEnter={() => setIsInsideCanvas(true)}
         onContextMenu={(e) => e.preventDefault()}
+        onDrop={onMainDrop}
+        onDragOver={onMainDragOver}
         className="flex-1 relative overflow-hidden"
         style={{
           backgroundColor: resolvedViewportBg,
@@ -646,10 +802,12 @@ export default function App() {
           lastShapeTool={lastShapeTool}
           pencilTab={pencilTab}
           pencilSize={pencilSize}
+          brushOpacity={brushOpacity}
           eraserSize={eraserSize}
-          shapeSize={shapeSize}
+          eraserShape={eraserShape}
           isShapeFilled={isShapeFilled}
           brushType={brushType}
+          fillOpacity={fillOpacity}
           selectedColor={selectedColor}
           hsv={hsv}
           hexInput={hexInput}
@@ -669,8 +827,11 @@ export default function App() {
               return;
             }
             if (tool === 'pencil' || tool === 'eraser') {
-              if (activeTool === tool) setActivePopover(activePopover === tool ? null : tool);
-              else { setActiveTool(tool); activeToolRef.current = tool; setActivePopover(null); }
+              if (activeTool !== tool) {
+                setActiveTool(tool);
+                activeToolRef.current = tool;
+                setActivePopover(null);
+              }
               return;
             }
             if (tool === 'bucket' || tool === 'hand' || tool === 'lasso') {
@@ -688,19 +849,25 @@ export default function App() {
           setActivePopover={setActivePopover}
           setPencilTab={setPencilTab}
           setPencilSize={setPencilSize}
+          setBrushOpacity={setBrushOpacity}
           setEraserSize={setEraserSize}
-          setShapeSize={setShapeSize}
+          setEraserShape={setEraserShape}
           setIsShapeFilled={setIsShapeFilled}
           setBrushType={setBrushType}
+          setFillOpacity={setFillOpacity}
           updateFromHsv={updateFromHsv}
           handleHex={handleHex}
           handleRgb={handleRgb}
           onShowPreview={showPreviewAtCanvasCenter}
           onHidePreview={hidePreview}
+          onUndo={undo}
+          onRedo={redo}
         />
 
         <div
           ref={canvasWrapperRef}
+          onPointerEnter={() => setIsInsideCanvas(true)}
+          onPointerLeave={() => setIsInsideCanvas(false)}
           className="absolute top-0 left-0 origin-top-left will-change-transform"
           style={{ width: canvasSize.w, height: canvasSize.h }}
         >
@@ -721,10 +888,24 @@ export default function App() {
               Drag · Enter · Del · Esc
             </div>
           )}
+          {imageTransform && (
+            <ImageTransformOverlay
+              transform={imageTransform}
+              canvasSize={canvasSize}
+              wrapperRef={canvasWrapperRef}
+              onChange={setImageTransform}
+              isDark={isDark}
+            />
+          )}
+          {imageTransform && (
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-3 py-1 rounded-md text-[11px] font-mono z-20 bg-blue-600 text-white shadow-lg pointer-events-none">
+              Enter — apply · Esc — cancel
+            </div>
+          )}
         </div>
       </main>
 
-            <Timeline
+      <Timeline
         isDark={isDark}
         panel={panel}
         border={border}
@@ -760,14 +941,15 @@ export default function App() {
         onSetOnionOpacity={setOnionOpacity}
       />
 
-      {(activeTool === 'pencil' || activeTool === 'eraser') && isInsideCanvas && ringSize > 0 && (
+      {(activeTool === 'pencil' || activeTool === 'eraser') && isInsideCanvas && ringSize > 0 && !imageTransform && (
         <div
           ref={cursorRingRef}
           className="fixed top-0 left-0 pointer-events-none z-[100] rounded-full"
           style={{
             width: `${ringSize * zoomRef.current}px`,
             height: `${ringSize * zoomRef.current}px`,
-            border: `1px solid ${activeTool === 'eraser' ? 'rgba(239,68,68,0.7)' : 'rgba(59,130,246,0.7)'}`,
+            transform: 'translate3d(-9999px, -9999px, 0)',
+            border: `1px solid ${activeTool === 'eraser' ? 'rgba(239,68,68,0.55)' : 'rgba(59,130,246,0.7)'}`,
             boxShadow: '0 0 0 1px rgba(0,0,0,0.25), inset 0 0 0 1px rgba(255,255,255,0.6)',
             willChange: 'transform',
           }}
@@ -778,7 +960,7 @@ export default function App() {
         ref={previewCircleRef}
         className="fixed pointer-events-none z-[105] rounded-full -translate-x-1/2 -translate-y-1/2"
         style={{
-          border: `1.5px solid ${activeTool === 'eraser' ? '#ef4444' : '#3b82f6'}`,
+          border: `1.5px solid ${activeTool === 'eraser' ? 'rgba(239,68,68,0.55)' : '#3b82f6'}`,
           backgroundColor: activeTool === 'pencil' ? `${selectedColor}33` : 'transparent',
           boxShadow: '0 0 0 1px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.55)',
           display: 'none',

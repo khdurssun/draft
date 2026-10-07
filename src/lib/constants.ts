@@ -8,10 +8,11 @@ import type { ShapeTool, BrushType } from './types';
 import type { TKey } from '../i18n/translations';
 
 export const SHAPE_TOOLS: { id: ShapeTool; labelKey: TKey; Icon: React.ComponentType<{ className?: string; strokeWidth?: number }> }[] = [
-  { id: 'line', labelKey: 'line', Icon: Minus },
-  { id: 'rectangle', labelKey: 'square', Icon: Square },
-  { id: 'circle', labelKey: 'circle', Icon: Circle },
-  { id: 'triangle', labelKey: 'triangle', Icon: Triangle },
+  { id: 'line',      labelKey: 'line',      Icon: Minus },
+  { id: 'rectangle', labelKey: 'square',    Icon: Square },
+  { id: 'circle',    labelKey: 'circle',    Icon: Circle },
+  { id: 'triangle',  labelKey: 'triangle',  Icon: Triangle },
+  { id: 'star',      labelKey: 'star',      Icon: Star },
 ];
 
 export type BrushGroup = 'basic' | 'soft' | 'textured' | 'special' | 'grand';

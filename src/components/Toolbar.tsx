@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Pencil, Eraser, PaintBucket, Hand, Lasso, Pipette, ChevronRight,
+  Circle as CircleIcon, Square as SquareIcon,
+  Undo2, Redo2,
 } from 'lucide-react';
 import { SHAPE_TOOLS } from '../lib/constants';
-import type { Tool, ShapeTool, BrushType } from '../lib/types';
+import type { Tool, ShapeTool, BrushType, EraserShape } from '../lib/types';
 import type { TKey } from '../i18n/translations';
 import PencilPopover from './PencilPopover';
 import ShapePopover from './ShapePopover';
 import EraserPopover from './EraserPopover';
+import BucketPopover from './BucketPopover';
 import ColorPicker from './ColorPicker';
 
-type Popover = 'pencil' | 'eraser' | 'shape' | 'color' | null;
+type Popover = 'pencil' | 'eraser' | 'shape' | 'color' | 'bucket' | null;
 
 interface Props {
   isDark: boolean;
@@ -29,10 +32,12 @@ interface Props {
   lastShapeTool: ShapeTool;
   pencilTab: 'size' | 'brush';
   pencilSize: number;
+  brushOpacity: number;
   eraserSize: number;
-  shapeSize: number;
+  eraserShape: EraserShape;
   isShapeFilled: boolean;
   brushType: BrushType;
+  fillOpacity: number;
   selectedColor: string;
   hsv: { h: number; s: number; v: number };
   hexInput: string;
@@ -46,15 +51,19 @@ interface Props {
   setActivePopover: (p: Popover) => void;
   setPencilTab: (t: 'size' | 'brush') => void;
   setPencilSize: (n: number) => void;
+  setBrushOpacity: (n: number) => void;
   setEraserSize: (n: number) => void;
-  setShapeSize: (n: number) => void;
+  setEraserShape: (s: EraserShape) => void;
   setIsShapeFilled: (v: boolean) => void;
   setBrushType: (b: BrushType) => void;
+  setFillOpacity: (n: number) => void;
   updateFromHsv: (n: { h: number; s: number; v: number }) => void;
   handleHex: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleRgb: (ch: 'r' | 'g' | 'b', v: string) => void;
   onShowPreview: (size: number) => void;
   onHidePreview: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 const SAFE_MARGIN = 16;
@@ -68,11 +77,14 @@ const stopAll = {
 export default function Toolbar({
   isDark, panel, border, hover, muted, textSoft, textMain, btnBase, inputBg,
   activeTool, activePopover, shapeMenuOpen, hoveredShape, lastShapeTool,
-  pencilTab, pencilSize, eraserSize, shapeSize, isShapeFilled, brushType, selectedColor,
+  pencilTab, pencilSize, brushOpacity, eraserSize, eraserShape,
+  isShapeFilled, brushType, fillOpacity, selectedColor,
   hsv, hexInput, rgbInput, satValRef, hueRef, t,
   onToolClick, onShapeMouseDown, onShapeHover, setActivePopover, setPencilTab,
-  setPencilSize, setEraserSize, setShapeSize, setIsShapeFilled, setBrushType,
+  setPencilSize, setBrushOpacity, setEraserSize, setEraserShape,
+  setIsShapeFilled, setBrushType, setFillOpacity,
   updateFromHsv, handleHex, handleRgb, onShowPreview, onHidePreview,
+  onUndo, onRedo,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const verticalRef = useRef<HTMLDivElement>(null);
@@ -113,7 +125,8 @@ export default function Toolbar({
 
   const isCurrentShapeTool =
     activeTool === 'line' || activeTool === 'rectangle' ||
-    activeTool === 'circle' || activeTool === 'triangle';
+    activeTool === 'circle' || activeTool === 'triangle' ||
+    activeTool === 'star';
 
   const currentShape: ShapeTool = isCurrentShapeTool
     ? (activeTool as ShapeTool)
@@ -139,17 +152,13 @@ export default function Toolbar({
   const BtnPencil = (
     <div className="relative">
       <button
-        onClick={() => {
-          if (activeTool === 'pencil' && activePopover === 'pencil') {
-            setActivePopover(null);
-          } else {
-            onToolClick('pencil');
-            setActivePopover('pencil');
-          }
+        onClick={() => onToolClick('pencil')}
+        onDoubleClick={() => {
+          setActivePopover(activePopover === 'pencil' ? null : 'pencil');
+          setPencilTab('size');
         }}
-        onDoubleClick={() => { setActivePopover('pencil'); setPencilTab('size'); }}
         className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'pencil')}`}
-        title="Pencil"
+        title="Pencil · double-click for settings"
       >
         <Pencil className="w-[17px] h-[17px]" strokeWidth={1.6} />
       </button>
@@ -157,8 +166,10 @@ export default function Toolbar({
         <PencilPopover
           isDark={isDark} border={border} muted={muted}
           size={pencilSize} brushType={brushType} tab={pencilTab}
+          opacity={brushOpacity}
           setSize={(v) => { setPencilSize(v); onShowPreview(v); }}
           setBrushType={setBrushType} setTab={setPencilTab}
+          setOpacity={setBrushOpacity}
           onHidePreview={onHidePreview} t={t}
         />
       )}
@@ -205,8 +216,8 @@ export default function Toolbar({
       {activePopover === 'shape' && isCurrentShapeTool && !shapeMenuOpen && (
         <ShapePopover
           isDark={isDark} border={border} muted={muted}
-          shapeSize={shapeSize} isShapeFilled={isShapeFilled} activeTool={activeTool}
-          setShapeSize={setShapeSize} setIsShapeFilled={setIsShapeFilled} t={t}
+          pencilSize={pencilSize} isShapeFilled={isShapeFilled} activeTool={activeTool}
+          setPencilSize={setPencilSize} setIsShapeFilled={setIsShapeFilled} t={t}
         />
       )}
     </div>
@@ -215,24 +226,25 @@ export default function Toolbar({
   const BtnEraser = (
     <div className="relative">
       <button
-        onClick={() => {
-          if (activeTool === 'eraser' && activePopover === 'eraser') {
-            setActivePopover(null);
-          } else {
-            onToolClick('eraser');
-            setActivePopover('eraser');
-          }
-        }}
-        onDoubleClick={() => setActivePopover('eraser')}
-        className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'eraser')}`}
-        title="Eraser"
+        onClick={() => onToolClick('eraser')}
+        onDoubleClick={() => setActivePopover(activePopover === 'eraser' ? null : 'eraser')}
+        className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'eraser')}`}
+        title="Eraser · double-click for settings"
       >
         <Eraser className="w-[17px] h-[17px]" strokeWidth={1.6} />
+        <span className="absolute bottom-0.5 right-0.5 opacity-70">
+          {eraserShape === 'square'
+            ? <SquareIcon className="w-2.5 h-2.5" strokeWidth={2.5} />
+            : <CircleIcon className="w-2.5 h-2.5" strokeWidth={2.5} />}
+        </span>
       </button>
       {activePopover === 'eraser' && (
         <EraserPopover
           isDark={isDark} border={border} muted={muted}
-          eraserSize={eraserSize} setEraserSize={setEraserSize}
+          eraserSize={eraserSize}
+          eraserShape={eraserShape}
+          setEraserSize={setEraserSize}
+          setEraserShape={setEraserShape}
           onPreview={onShowPreview} onHidePreview={onHidePreview} t={t}
         />
       )}
@@ -240,20 +252,31 @@ export default function Toolbar({
   );
 
   const BtnBucket = (
-    <button
-      onClick={() => onToolClick('bucket')}
-      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'bucket')}`}
-      title="Bucket"
-    >
-      <PaintBucket className="w-[17px] h-[17px]" strokeWidth={1.6} />
-    </button>
+    <div className="relative">
+      <button
+        onClick={() => onToolClick('bucket')}
+        onDoubleClick={() => setActivePopover(activePopover === 'bucket' ? null : 'bucket')}
+        className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'bucket')}`}
+        title="Bucket · double-click for opacity"
+      >
+        <PaintBucket className="w-[17px] h-[17px]" strokeWidth={1.6} />
+      </button>
+      {activePopover === 'bucket' && (
+        <BucketPopover
+          isDark={isDark} border={border} muted={muted}
+          fillOpacity={fillOpacity}
+          setFillOpacity={setFillOpacity}
+          t={t}
+        />
+      )}
+    </div>
   );
 
   const BtnLasso = (
     <button
       onClick={() => onToolClick('lasso')}
       className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'lasso')}`}
-      title="Lasso"
+      title="Lasso · Y"
     >
       <Lasso className="w-[17px] h-[17px]" strokeWidth={1.6} />
     </button>
@@ -263,7 +286,7 @@ export default function Toolbar({
     <button
       onClick={() => onToolClick('eyedropper')}
       className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'eyedropper')}`}
-      title="Eyedropper"
+      title="Eyedropper · T"
     >
       <Pipette className="w-[17px] h-[17px]" strokeWidth={1.6} />
     </button>
@@ -300,9 +323,29 @@ export default function Toolbar({
     <button
       onClick={() => onToolClick('hand')}
       className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${getBtnStyle(activeTool === 'hand')}`}
-      title="Hand"
+      title="Hand · U"
     >
       <Hand className="w-[17px] h-[17px]" strokeWidth={1.6} />
+    </button>
+  );
+
+  const BtnUndo = (
+    <button
+      onClick={onUndo}
+      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${btnBase} ${textSoft} hover:${textMain}`}
+      title="Undo · Ctrl+Z"
+    >
+      <Undo2 className="w-[17px] h-[17px]" strokeWidth={1.6} />
+    </button>
+  );
+
+  const BtnRedo = (
+    <button
+      onClick={onRedo}
+      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 ${btnBase} ${textSoft} hover:${textMain}`}
+      title="Redo · Ctrl+Shift+Z"
+    >
+      <Redo2 className="w-[17px] h-[17px]" strokeWidth={1.6} />
     </button>
   );
 
@@ -325,6 +368,9 @@ export default function Toolbar({
             {BtnColor}
             <Sep horizontal />
             {BtnHand}
+            <Sep horizontal />
+            {BtnUndo}
+            {BtnRedo}
           </div>
         </div>
       ) : (
@@ -342,6 +388,9 @@ export default function Toolbar({
             {BtnLasso}
             {BtnColor}
             {BtnHand}
+            <Sep />
+            {BtnUndo}
+            {BtnRedo}
           </div>
         </div>
       )}

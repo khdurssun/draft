@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Play, Pause, Square, SkipBack, SkipForward, ChevronFirst, ChevronLast,
-  Plus, Copy, Trash2, Eraser, ChevronUp, ChevronDown, ChevronUp as CaretUp, ChevronDown as CaretDown,
+  Plus, Copy, Trash2, Eraser, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import type { AnimationFrame } from '../animation/types';
 import type { TKey } from '../i18n/translations';
@@ -46,73 +46,6 @@ interface Props {
 const COLLAPSED_HEIGHT = 42;
 const MAX_HEIGHT = 420;
 const DEFAULT_EXPANDED_HEIGHT = 260;
-
-/* ─── Числовое поле с кастомными стрелками ▲▼ ─── */
-interface NumberFieldProps {
-  value: number;
-  min: number;
-  max: number;
-  fallback: number;
-  onChange: (n: number) => void;
-  isDark: boolean;
-  width: string;
-}
-
-function NumberField({ value, min, max, fallback, onChange, isDark, width }: NumberFieldProps) {
-  const clamp = (n: number) => Math.max(min, Math.min(max, Number.isFinite(n) ? n : fallback));
-
-  const baseInput = [
-    `${width} h-7 pl-1.5 pr-5 rounded-md border text-xs font-mono tabular-nums text-center`,
-    'outline-none transition-colors',
-    'appearance-none',
-    '[&::-webkit-outer-spin-button]:appearance-none',
-    '[&::-webkit-inner-spin-button]:appearance-none',
-    '[&::-moz-appearance]:textfield',
-    isDark
-      ? 'bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500'
-      : 'bg-white border-zinc-300 text-zinc-900 focus:border-zinc-500',
-  ].join(' ');
-
-  const arrowBtn = [
-    'flex items-center justify-center w-4 h-[13px] transition-colors',
-    isDark
-      ? 'text-zinc-500 hover:text-zinc-100 active:text-blue-400'
-      : 'text-zinc-400 hover:text-zinc-900 active:text-blue-500',
-  ].join(' ');
-
-  return (
-    <div className="relative inline-flex items-center">
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => onChange(clamp(Number(e.target.value)))}
-        className={baseInput}
-      />
-      <div className="absolute right-0.5 top-1/2 -translate-y-1/2 flex flex-col">
-        <button
-          type="button"
-          tabIndex={-1}
-          onClick={() => onChange(clamp(value + 1))}
-          className={arrowBtn}
-          aria-label="increment"
-        >
-          <CaretUp className="w-2.5 h-2.5" strokeWidth={2.5} />
-        </button>
-        <button
-          type="button"
-          tabIndex={-1}
-          onClick={() => onChange(clamp(value - 1))}
-          className={arrowBtn}
-          aria-label="decrement"
-        >
-          <CaretDown className="w-2.5 h-2.5" strokeWidth={2.5} />
-        </button>
-      </div>
-    </div>
-  );
-}
 
 export default function Timeline({
   isDark, panel, border, muted, btnBase,
@@ -196,6 +129,16 @@ export default function Timeline({
 
   const iconBtn = `w-8 h-8 rounded-md flex items-center justify-center transition-colors ${btnBase}`;
 
+  const numInput = [
+    'h-7 rounded-md text-[11px] font-mono tabular-nums text-center',
+    'outline-none transition-colors',
+    isDark
+      ? 'bg-[#141416] text-zinc-100 border border-[#27272a] hover:border-[#3f3f46] focus:border-blue-500 focus:ring-1 focus:ring-blue-500/40'
+      : 'bg-zinc-50 text-zinc-900 border border-zinc-200 hover:border-zinc-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/40',
+  ].join(' ');
+
+  const smallLabel = `text-[10px] font-medium uppercase tracking-wider ${muted}`;
+
   const stripBg = isDark ? 'bg-[#0a0a0b]' : 'bg-zinc-50';
   const labelColor = isDark ? 'text-zinc-500' : 'text-zinc-400';
   const counterBg = isDark ? 'bg-zinc-800/60 text-zinc-300' : 'bg-white text-zinc-700';
@@ -226,7 +169,9 @@ export default function Timeline({
       </div>
 
       {/* Шапка управления */}
-      <div className={`h-[42px] flex items-center justify-between px-3 border-t ${border} gap-4`}>
+      <div className={`h-[42px] flex items-center gap-3 px-3 border-t ${border}`}>
+
+        {/* Playback */}
         <div className="flex items-center gap-1">
           <button onClick={onFirst} className={iconBtn} title={t('firstFrame')}>
             <ChevronFirst className="w-4 h-4" strokeWidth={1.8} />
@@ -260,29 +205,22 @@ export default function Timeline({
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
-        <div className="flex items-center gap-3">
-          <div className={`text-xs font-mono font-medium tabular-nums px-2.5 py-1 rounded-md ${
-            isDark ? 'bg-zinc-800/80 text-zinc-200' : 'bg-zinc-100 text-zinc-800'
-          }`}>
-            {currentFrame + 1} / {frameOrder.length}
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <span className={`text-xs font-semibold uppercase tracking-wider ${muted}`}>{t('fps')}</span>
-            <NumberField
-              value={fps}
-              min={1}
-              max={60}
-              fallback={12}
-              onChange={onSetFps}
-              isDark={isDark}
-              width="w-14"
-            />
-          </div>
+        {/* FPS */}
+        <div className="flex items-center gap-1.5">
+          <span className={smallLabel}>{t('fps')}</span>
+          <input
+            type="number"
+            min={1}
+            max={60}
+            value={fps}
+            onChange={(e) => onSetFps(Math.max(1, Math.min(60, Number(e.target.value) || 12)))}
+            className={`${numInput} w-14`}
+          />
         </div>
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
+        {/* Действия с кадрами */}
         <div className="flex items-center gap-1">
           <button onClick={onAddFrame} className={iconBtn} title={`${t('newFrame')} · Ctrl+M`}>
             <Plus className="w-4 h-4" strokeWidth={1.8} />
@@ -305,50 +243,43 @@ export default function Timeline({
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
+        {/* Onion skin */}
         <div className="flex items-center gap-2">
-          <span className={`text-xs font-semibold uppercase tracking-wider ${muted}`}>
-            {t('onionSkin')}
-          </span>
-          <div className="flex items-center gap-1">
-            <span className={`text-[10px] font-medium uppercase ${muted}`}>{t('onionPrev')}</span>
-            <NumberField
-              value={onionPrev}
-              min={0}
-              max={5}
-              fallback={0}
-              onChange={onSetOnionPrev}
-              isDark={isDark}
-              width="w-12"
-            />
-          </div>
-          <div className="flex items-center gap-1">
-            <span className={`text-[10px] font-medium uppercase ${muted}`}>{t('onionNext')}</span>
-            <NumberField
-              value={onionNext}
-              min={0}
-              max={5}
-              fallback={0}
-              onChange={onSetOnionNext}
-              isDark={isDark}
-              width="w-12"
-            />
-          </div>
-          <div className="flex items-center gap-1">
-            <span className={`text-[10px] font-medium uppercase ${muted}`}>{t('onionOpacity')}</span>
-            <NumberField
-              value={Math.round(onionOpacity * 100)}
-              min={5}
-              max={80}
-              fallback={30}
-              onChange={(n) => onSetOnionOpacity(n / 100)}
-              isDark={isDark}
-              width="w-14"
-            />
-            <span className={`text-xs ${muted}`}>%</span>
-          </div>
+          <span className={smallLabel}>{t('onionSkin')}</span>
+
+          <span className={smallLabel}>{t('onionPrev')}</span>
+          <input
+            type="number"
+            min={0}
+            max={5}
+            value={onionPrev}
+            onChange={(e) => onSetOnionPrev(Math.max(0, Math.min(5, Number(e.target.value) || 0)))}
+            className={`${numInput} w-12`}
+          />
+
+          <span className={smallLabel}>{t('onionNext')}</span>
+          <input
+            type="number"
+            min={0}
+            max={5}
+            value={onionNext}
+            onChange={(e) => onSetOnionNext(Math.max(0, Math.min(5, Number(e.target.value) || 0)))}
+            className={`${numInput} w-12`}
+          />
+
+          <span className={smallLabel}>{t('onionOpacity')}</span>
+          <input
+            type="number"
+            min={5}
+            max={80}
+            value={Math.round(onionOpacity * 100)}
+            onChange={(e) => onSetOnionOpacity(Math.max(5, Math.min(80, Number(e.target.value) || 30)) / 100)}
+            className={`${numInput} w-14`}
+          />
+          <span className={smallLabel}>%</span>
         </div>
 
-        <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
+        <div className="flex-1" />
 
         <button
           onClick={() => setHeight(prev => prev <= COLLAPSED_HEIGHT ? DEFAULT_EXPANDED_HEIGHT : COLLAPSED_HEIGHT)}
@@ -373,7 +304,6 @@ export default function Timeline({
                 {currentFrame + 1} / {frameOrder.length}
               </span>
             </div>
-            <span className={`text-[10px] ${labelColor}`}>{t('scrollHint')}</span>
           </div>
 
           <div

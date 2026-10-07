@@ -1,12 +1,21 @@
 import { useCallback } from 'react';
 import type { MutableRefObject, ChangeEvent } from 'react';
-import type { LayerMeta, HistoryEntry, Point } from '../lib/types';
+import type { LayerMeta, HistoryEntry, Point, DraftProjectData } from '../lib/types';
 import type { AnimationFrame } from '../animation/types';
 import { uid } from '../lib/constants';
 import { createEmptyCanvas, cloneCanvas, createFrame } from '../animation/frameManager';
+import {
+  serializeProject,
+  saveProjectToFile,
+  deserializeProject,
+  exportAnimationVideo,
+  exportAnimationGif,
+  downloadBlob,
+} from '../lib/projectIO';
 
 type CanvasMap = Map<string, Map<string, HTMLCanvasElement>>;
 type LassoMode = 'draw' | 'selected' | 'move' | null;
+type ActiveMenu = 'file' | 'render' | null;
 
 export interface UseProjectOpsArgs {
   layersRef: MutableRefObject<LayerMeta[]>;
@@ -27,15 +36,22 @@ export interface UseProjectOpsArgs {
   zoomRef: MutableRefObject<number>;
   panRef: MutableRefObject<Point>;
   fileInputRef: MutableRefObject<HTMLInputElement | null>;
+  projectInputRef: MutableRefObject<HTMLInputElement | null>;
   lassoModeRef: MutableRefObject<LassoMode>;
+  fpsRef: MutableRefObject<number>;
+  onionSettingsRef: MutableRefObject<{ enabled: boolean; prev: number; next: number; opacity: number }>;
 
   setActiveLayerId: (id: string) => void;
   setCurrentFrame: (n: number) => void;
   setCanvasSize: (n: { w: number; h: number }) => void;
+  setCanvasBg: (v: string) => void;
   setIsPlaying: (v: boolean | ((p: boolean) => boolean)) => void;
   setShowNewProject: (v: boolean) => void;
-  setActiveMenu: (v: 'file' | null) => void;
-  setExportOpen: (v: boolean) => void;
+  setActiveMenu: (v: ActiveMenu) => void;
+  setFps: (n: number) => void;
+  setOnionPrev: (n: number) => void;
+  setOnionNext: (n: number) => void;
+  setOnionOpacity: (n: number) => void;
 
   bumpLayers: () => void;
   bumpThumbs: () => void;
@@ -48,25 +64,32 @@ export interface UseProjectOpsArgs {
     before: ImageData | null,
     after: ImageData | null,
     label: string,
+    bounds?: { x: number; y: number; w: number; h: number } | null,
   ) => void;
   commitLasso: (label?: string) => void;
 
   renderComposite: () => void;
   getCurrentFrameId: () => string | null;
   getFrameCanvasById: (layerId: string, frameId: string) => HTMLCanvasElement | null;
+
+  /** Колбэк, вызываемый после декодирования импортируемого изображения. */
+  onImageLoaded: (img: HTMLImageElement) => void;
 }
 
 export function useProjectOps({
   layersRef, framesRef, frameOrderRef, frameMetaRef, frameCountRef, currentFrameRef,
   activeLayerIdRef, historyRef, redoRef,
   canvasSizeRef, canvasBgRef, baseCanvasRef, overlayCanvasRef,
-  containerRef, canvasWrapperRef, zoomRef, panRef, fileInputRef,
-  lassoModeRef,
-  setActiveLayerId, setCurrentFrame, setCanvasSize, setIsPlaying,
-  setShowNewProject, setActiveMenu, setExportOpen,
+  containerRef, canvasWrapperRef, zoomRef, panRef,
+  fileInputRef, projectInputRef, lassoModeRef,
+  fpsRef, onionSettingsRef,
+  setActiveLayerId, setCurrentFrame, setCanvasSize, setCanvasBg, setIsPlaying,
+  setShowNewProject, setActiveMenu, setFps,
+  setOnionPrev, setOnionNext, setOnionOpacity,
   bumpLayers, bumpThumbs, bumpTimeline,
   snapshot, pushHistory, commitLasso,
   renderComposite, getCurrentFrameId, getFrameCanvasById,
+  onImageLoaded,
 }: UseProjectOpsArgs) {
   const findLayer = useCallback((id: string): LayerMeta | null => {
     for (const l of layersRef.current) if (l.id === id) return l;
@@ -260,7 +283,7 @@ export function useProjectOps({
     selectFrame(0);
   }, [setIsPlaying, selectFrame]);
 
-  const exportImg = useCallback((fmt: 'png' | 'jpeg', onlyActive: boolean = false) => {
+  const renderImage = useCallback((fmt: 'png' | 'jpeg', onlyActive: boolean = false) => {
     const comp = document.createElement('canvas');
     const { w, h } = canvasSizeRef.current;
     comp.width = w;
@@ -291,82 +314,181 @@ export function useProjectOps({
     link.href = comp.toDataURL(mime, quality);
     link.click();
     setActiveMenu(null);
-    setExportOpen(false);
   }, [
     canvasSizeRef, getCurrentFrameId, getFrameCanvasById, activeLayerIdRef,
-    canvasBgRef, layersRef, framesRef, setActiveMenu, setExportOpen,
+    canvasBgRef, layersRef, framesRef, setActiveMenu,
+  ]);
+
+  const renderAnimation = useCallback(async (fmt: 'webm' | 'mp4' | 'gif') => {
+    const { w, h } = canvasSizeRef.current;
+    if (frameOrderRef.current.length === 0) return;
+
+    const input = {
+      fps: fpsRef.current || 12,
+      canvasSize: { w, h },
+      canvasBg: canvasBgRef.current,
+      frameOrder: [...frameOrderRef.current],
+      layers: [...layersRef.current],
+      canvases: framesRef.current,
+    };
+
+    try {
+      if (fmt === 'gif') {
+        const blob = await exportAnimationGif(input);
+        downloadBlob(blob, `draft-${Date.now()}.gif`);
+      } else {
+        const blob = await exportAnimationVideo({ ...input, format: fmt });
+        downloadBlob(blob, `draft-${Date.now()}.${fmt}`);
+      }
+    } catch (err) {
+      console.error('Animation export failed:', err);
+    }
+    setActiveMenu(null);
+  }, [
+    canvasSizeRef, canvasBgRef, frameOrderRef, layersRef, framesRef,
+    fpsRef, setActiveMenu,
+  ]);
+
+  const saveProject = useCallback(() => {
+    const data = serializeProject({
+      canvasSize: canvasSizeRef.current,
+      canvasBg: canvasBgRef.current,
+      frameOrder: frameOrderRef.current,
+      frameMeta: frameMetaRef.current,
+      layers: layersRef.current,
+      activeLayerId: activeLayerIdRef.current,
+      currentFrame: currentFrameRef.current,
+      fps: fpsRef.current,
+      onion: {
+        prev: onionSettingsRef.current.prev,
+        next: onionSettingsRef.current.next,
+        opacity: onionSettingsRef.current.opacity,
+      },
+      canvases: framesRef.current,
+    });
+    saveProjectToFile(data);
+    setActiveMenu(null);
+  }, [
+    canvasSizeRef, canvasBgRef, frameOrderRef, frameMetaRef, layersRef,
+    activeLayerIdRef, currentFrameRef, fpsRef, onionSettingsRef, framesRef,
+    setActiveMenu,
+  ]);
+
+  const openProject = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const raw = ev.target?.result as string;
+        const data = JSON.parse(raw) as DraftProjectData;
+
+        if (data.format !== 'zuno-draft') {
+          console.warn('Not a .draft file');
+          return;
+        }
+
+        const { canvases } = await deserializeProject(data);
+
+        layersRef.current = data.layers.map(l => ({
+          id: l.id,
+          name: l.name,
+          visible: l.visible,
+          locked: l.locked,
+        }));
+
+        const newMeta = new Map<string, AnimationFrame>();
+        for (const fm of data.frameMeta) {
+          newMeta.set(fm.id, { id: fm.id, duration: fm.duration });
+        }
+
+        framesRef.current = canvases;
+        frameOrderRef.current = [...data.frameOrder];
+        frameMetaRef.current = newMeta;
+        frameCountRef.current = data.frameOrder.length;
+        currentFrameRef.current = Math.max(0, Math.min(data.currentFrame, data.frameOrder.length - 1));
+        activeLayerIdRef.current = data.activeLayerId;
+
+        historyRef.current = [];
+        redoRef.current = [];
+
+        if (baseCanvasRef.current) {
+          baseCanvasRef.current.width = data.canvasSize.w;
+          baseCanvasRef.current.height = data.canvasSize.h;
+        }
+        if (overlayCanvasRef.current) {
+          overlayCanvasRef.current.width = data.canvasSize.w;
+          overlayCanvasRef.current.height = data.canvasSize.h;
+        }
+
+        canvasSizeRef.current = data.canvasSize;
+        setCanvasSize(data.canvasSize);
+        canvasBgRef.current = data.canvasBg;
+        setCanvasBg(data.canvasBg);
+        setActiveLayerId(data.activeLayerId);
+        setCurrentFrame(currentFrameRef.current);
+        setFps(data.fps);
+        fpsRef.current = data.fps;
+        setOnionPrev(data.onion.prev);
+        setOnionNext(data.onion.next);
+        setOnionOpacity(data.onion.opacity);
+        setIsPlaying(false);
+
+        setTimeout(() => {
+          renderComposite();
+          if (containerRef.current && canvasWrapperRef.current) {
+            const r = containerRef.current.getBoundingClientRect();
+            const { w, h } = data.canvasSize;
+            const sx = (r.width * 0.85) / w;
+            const sy = (r.height * 0.85) / h;
+            const z = Math.min(Math.max(Math.min(sx, sy), 0.2), 1);
+            zoomRef.current = z;
+            const np = { x: (r.width - w * z) / 2, y: Math.max(20, (r.height - h * z) / 2) };
+            panRef.current = np;
+            canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${z})`;
+          }
+        }, 50);
+
+        bumpLayers(); bumpTimeline(); bumpThumbs();
+      } catch (err) {
+        console.error('Failed to open project:', err);
+      }
+    };
+    reader.readAsText(file);
+
+    setActiveMenu(null);
+    if (projectInputRef.current) projectInputRef.current.value = '';
+  }, [
+    layersRef, framesRef, frameOrderRef, frameMetaRef, frameCountRef,
+    currentFrameRef, activeLayerIdRef, historyRef, redoRef,
+    baseCanvasRef, overlayCanvasRef, canvasSizeRef, canvasBgRef,
+    containerRef, canvasWrapperRef, zoomRef, panRef, fpsRef,
+    setCanvasSize, setCanvasBg, setActiveLayerId, setCurrentFrame,
+    setFps, setOnionPrev, setOnionNext, setOnionOpacity, setIsPlaying,
+    renderComposite, bumpLayers, bumpTimeline, bumpThumbs,
+    setActiveMenu, projectInputRef,
   ]);
 
   /**
-   * Импорт изображения в ТЕКУЩИЙ активный кадр ТЕКУЩЕГО активного слоя.
-   * Поверх существующего содержимого. Не создаёт новый слой.
-   * Поддерживает Undo/Redo через pushHistory.
+   * Open Image — теперь только читает файл и передаёт <img> наружу.
+   * Логика создания image-layer'а и трансформации — в App.tsx.
    */
   const handleOpenProject = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    const lid = activeLayerIdRef.current;
-    const fid = frameOrderRef.current[currentFrameRef.current];
-    if (!lid || !fid) {
-      setActiveMenu(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
-    const layer = findLayer(lid);
-    if (!layer || layer.locked || !layer.visible) {
-      // Заблокированный или невидимый слой — как при обычном рисовании.
-      setActiveMenu(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
-    const target = framesRef.current.get(lid)?.get(fid);
-    if (!target) {
-      setActiveMenu(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
     const reader = new FileReader();
     reader.onload = (event) => {
       const img = new Image();
       img.onload = () => {
-        const ctx = target.getContext('2d');
-        if (!ctx) return;
-        const { w, h } = canvasSizeRef.current;
-
-        // Снимок «до» — для Undo/Redo.
-        const before = snapshot(lid, fid);
-
-        // Вписываем фото в canvas с сохранением пропорций, по центру.
-        const sx = w / img.width;
-        const sy = h / img.height;
-        const scale = Math.min(sx, sy);
-        const dw = img.width * scale;
-        const dh = img.height * scale;
-        ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
-
-        // Снимок «после» — для Undo/Redo.
-        const after = snapshot(lid, fid);
-        if (before && after) pushHistory(lid, fid, before, after, 'Import image');
-
-        renderComposite();
-        bumpThumbs(); bumpTimeline();
+        onImageLoaded(img);
       };
       img.src = event.target?.result as string;
     };
     reader.readAsDataURL(file);
-
     setActiveMenu(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [
-    activeLayerIdRef, frameOrderRef, framesRef, findLayer,
-    canvasSizeRef, snapshot, pushHistory,
-    renderComposite, bumpThumbs, bumpTimeline,
-    setActiveMenu, fileInputRef,
-  ]);
+  }, [setActiveMenu, fileInputRef, onImageLoaded]);
 
   const createNewProject = useCallback((w: number, h: number) => {
     const lid = uid();
@@ -428,7 +550,10 @@ export function useProjectOps({
     advanceFrame,
     onPlayPause,
     onStopPlayback,
-    exportImg,
+    renderImage,
+    renderAnimation,
+    saveProject,
+    openProject,
     handleOpenProject,
     createNewProject,
   };

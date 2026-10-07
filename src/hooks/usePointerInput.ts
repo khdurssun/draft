@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { MutableRefObject } from 'react';
-import type { Tool, ShapeTool, BrushType, Point, FreehandStroke, ShapeAction } from '../lib/types';
+import type { Tool, ShapeTool, BrushType, Point, FreehandStroke, ShapeAction, EraserShape } from '../lib/types';
 import { pointInPolygon, tracePolygon } from '../lib/geometry';
 import { floodFill } from '../lib/floodFill';
 import { drawActionToCtx } from '../lib/actions';
@@ -11,29 +11,16 @@ import type { DiffBounds } from '../lib/history';
 
 type LassoMode = 'draw' | 'selected' | 'move' | null;
 
-/** Кисти, у которых визуальный след выходит за пределы bbox штриха:
- *  свечение (neon / glow / flame / galaxy), разлёт частиц (spray / sparkle),
- *  мягкие края (airbrush / mist / fog), и т.п.
- *  Для них нельзя делать региональный diff по bounds — undo не уберёт «хвост».
- *  Используется для двух задач:
- *    1) overlay рисуется полностью + троттлится (см. drawOverlay);
- *    2) pushHistory вызывается БЕЗ bounds (полный diff по canvas).
- */
 const TEXTURED_BRUSHES: BrushType[] = [
-  // soft
   'airbrush', 'glow', 'watercolor', 'neon',
   'mist', 'smoke', 'cloud', 'aurora', 'fog',
-  // textured
   'spray', 'chalk', 'charcoal', 'crayon', 'bristle',
   'oil', 'pastel', 'sand', 'rust', 'concrete', 'wood', 'fabric',
-  // special
   'sparkle', 'stars', 'confetti', 'bubbles', 'glitter',
   'frost', 'splatter', 'vine', 'leaves',
-  // grand
   'mosaic', 'rings', 'web', 'flame', 'galaxy',
 ];
 
-/** Порог количества точек, после которого overlay рендерится не чаще 1 раза в 2 кадра. */
 const LONG_STROKE_THRESHOLD = 200;
 
 export interface UsePointerInputArgs {
@@ -41,9 +28,11 @@ export interface UsePointerInputArgs {
   selectedColorRef: MutableRefObject<string>;
   pencilSizeRef: MutableRefObject<number>;
   eraserSizeRef: MutableRefObject<number>;
-  shapeSizeRef: MutableRefObject<number>;
   isShapeFilledRef: MutableRefObject<boolean>;
   brushTypeRef: MutableRefObject<BrushType>;
+  brushOpacityRef: MutableRefObject<number>;
+  eraserShapeRef: MutableRefObject<EraserShape>;
+  fillOpacityRef: MutableRefObject<number>;
   zoomRef: MutableRefObject<number>;
   panRef: MutableRefObject<Point>;
   canvasSizeRef: MutableRefObject<{ w: number; h: number }>;
@@ -71,6 +60,12 @@ export interface UsePointerInputArgs {
 
   prevTool: Tool;
 
+  /** Текущий shape-tool, к которому переключаться по хоткею W. */
+  lastShapeToolRef: MutableRefObject<ShapeTool>;
+
+  /** true, если сейчас в App.tsx активен режим редактирования картинки. */
+  hasImageTransformRef: MutableRefObject<boolean>;
+
   renderComposite: () => void;
   getCurrentFrameId: () => string | null;
   getFrameCanvasById: (layerId: string, frameId: string) => HTMLCanvasElement | null;
@@ -97,13 +92,21 @@ export interface UsePointerInputArgs {
   undo: () => void;
   redo: () => void;
 
+  onCommitImageTransform: () => void;
+  onCancelImageTransform: () => void;
+
+  /** Хоткей переключения инструмента. Принимает конкретный Tool. */
+  onToolShortcut: (tool: Tool) => void;
+  /** Ctrl+Alt+N → New Project. */
+  onNewProjectShortcut: () => void;
+
   setSelectedColor: (v: string) => void;
   setHexInput: (v: string) => void;
   setRgbInput: (v: { r: string; g: string; b: string }) => void;
   setHsv: (v: { h: number; s: number; v: number }) => void;
   setActiveTool: (v: Tool) => void;
-  setActiveMenu: (v: 'file' | null) => void;
-  setActivePopover: (v: 'pencil' | 'eraser' | 'shape' | 'color' | null) => void;
+  setActiveMenu: (v: 'file' | 'render' | null) => void;
+  setActivePopover: (v: 'pencil' | 'eraser' | 'shape' | 'color' | 'bucket' | null) => void;
   setIsShapeMenuOpen: (v: boolean) => void;
   setShowSettings: (v: boolean) => void;
   setShowNewProject: (v: boolean) => void;
@@ -114,23 +117,27 @@ export interface UsePointerInputArgs {
 }
 
 export function usePointerInput({
-  activeToolRef, selectedColorRef, pencilSizeRef, eraserSizeRef, shapeSizeRef,
-  isShapeFilledRef, brushTypeRef, zoomRef, panRef, canvasSizeRef,
+  activeToolRef, selectedColorRef, pencilSizeRef, eraserSizeRef,
+  isShapeFilledRef, brushTypeRef, brushOpacityRef, eraserShapeRef, fillOpacityRef,
+  zoomRef, panRef, canvasSizeRef,
   activeLayerIdRef, frameOrderRef, currentFrameRef,
   baseCanvasRef, overlayCanvasRef, canvasWrapperRef, containerRef,
   cursorRingRef, previewCircleRef, previewSizeRef, previewActiveRef,
   lassoPathRef, lassoPolyRef, lassoBufferRef, lassoBBoxRef, lassoOffsetRef,
   lassoModeRef, lassoMoveStartRef, lassoPreSnapshotRef,
   prevTool,
+  lastShapeToolRef,
+  hasImageTransformRef,
   renderComposite, getCurrentFrameId, getFrameCanvasById,
   findLayer, selectFrame, addFrame, deleteFrame, bumpThumbs, bumpTimeline,
   snapshot, pushHistory, commitLasso, cancelLasso, clearLassoState, undo, redo,
+  onCommitImageTransform, onCancelImageTransform,
+  onToolShortcut, onNewProjectShortcut,
   setSelectedColor, setHexInput, setRgbInput, setHsv, setActiveTool,
   setActiveMenu, setActivePopover, setIsShapeMenuOpen,
   setShowSettings, setShowNewProject, setExportOpen, setHasSelection,
   onTogglePlayback,
 }: UsePointerInputArgs) {
-  /* ─── Pointer-only refs ─── */
   const currentStrokeRef = useRef<Point[]>([]);
   const currentPressuresRef = useRef<number[]>([]);
   const shapeStartRef = useRef<Point | null>(null);
@@ -147,19 +154,17 @@ export function usePointerInput({
   const penActiveRef = useRef(false);
   const penReleaseTimerRef = useRef<number | null>(null);
 
-  // Space: отслеживаем, был ли pan во время удержания, чтобы понять tap vs hold.
   const spaceDownTimeRef = useRef<number>(0);
   const spaceUsedForPanRef = useRef(false);
 
-  /* ─── Оптимизация overlay: rAF-throttle для длинных штрихов ─── */
   const skipNextRef = useRef<boolean>(false);
   const pendingRef = useRef<boolean>(false);
-  const strokeBoundsRef = useRef<DiffBounds | null>(null); // bbox текущего штриха (для history)
+  const strokeBoundsRef = useRef<DiffBounds | null>(null);
 
   const isShapeTool = (tl: Tool): tl is ShapeTool =>
-    tl === 'line' || tl === 'rectangle' || tl === 'circle' || tl === 'triangle';
+    tl === 'line' || tl === 'rectangle' || tl === 'circle' ||
+    tl === 'triangle' || tl === 'star';
 
-  /* ─── Coords ─── */
   const getCanvasPt = useCallback((cx: number, cy: number): Point => {
     if (!containerRef.current) return { x: 0, y: 0 };
     const r = containerRef.current.getBoundingClientRect();
@@ -169,7 +174,6 @@ export function usePointerInput({
     };
   }, [containerRef, panRef, zoomRef]);
 
-  /* ─── Bounds helper ─── */
   const updateStrokeBounds = useCallback((p: Point, radius: number) => {
     const cur = strokeBoundsRef.current;
     const pad = radius + 4;
@@ -184,12 +188,6 @@ export function usePointerInput({
     cur.x = x0; cur.y = y0; cur.w = x1 - x0; cur.h = y1 - y0;
   }, []);
 
-  /* ─── Overlay ───
-   * Overlay всегда рисует ПОЛНЫЙ штрих каждый раз — как раньше.
-   * Оптимизация только одна: для длинных штрихов (>= LONG_STROKE_THRESHOLD точек)
-   * перерисовка идёт не чаще, чем 1 раз в 2 кадра. Это даёт ~30 fps на длинных
-   * штрихах любой кисти, не теряя визуальной идентичности overlay и финала.
-   */
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
@@ -245,39 +243,40 @@ export function usePointerInput({
 
     if (!isMouseDownRef.current) return;
 
-    if (tool === 'pencil' || tool === 'eraser') {
+    if (tool === 'pencil') {
       const pts = currentStrokeRef.current;
       if (pts.length === 0) return;
-      const size = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
-      if (tool === 'eraser') {
-        ctx.save();
-        ctx.globalAlpha = 0.45;
-        drawStrokeToCtx(ctx, {
-          type: 'stroke', tool: 'pencil', brush: 'round',
-          points: pts,
-          pressures: currentPressuresRef.current,
-          color: '#ef4444',
-          size,
-        }, false);
-        ctx.restore();
-      } else {
-        drawStrokeToCtx(ctx, {
-          type: 'stroke', tool, brush: brushTypeRef.current,
-          points: pts,
-          pressures: currentPressuresRef.current,
-          color: selectedColorRef.current,
-          size,
-        }, false);
-      }
+      drawStrokeToCtx(ctx, {
+        type: 'stroke', tool: 'pencil', brush: brushTypeRef.current,
+        points: pts,
+        pressures: currentPressuresRef.current,
+        color: selectedColorRef.current,
+        size: pencilSizeRef.current,
+        opacity: brushOpacityRef.current,
+      }, false);
+    } else if (tool === 'eraser') {
+      const pts = currentStrokeRef.current;
+      if (pts.length === 0) return;
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      drawStrokeToCtx(ctx, {
+        type: 'stroke', tool: 'pencil', brush: eraserShapeRef.current,
+        points: pts,
+        pressures: currentPressuresRef.current,
+        color: '#ef4444',
+        size: eraserSizeRef.current,
+      }, false);
+      ctx.restore();
     } else if (shapeStartRef.current && isShapeTool(tool)) {
       drawShapeToCtx(ctx, {
         type: 'shape', tool,
         start: shapeStartRef.current,
         end: cursorPosRef.current,
         color: selectedColorRef.current,
-        size: shapeSizeRef.current,
+        size: pencilSizeRef.current,
         isFilled: isShapeFilledRef.current,
         shiftKey: shiftPressedRef.current,
+        brush: brushTypeRef.current,
       });
     }
   }, [
@@ -285,14 +284,11 @@ export function usePointerInput({
     lassoPathRef, zoomRef, lassoPolyRef, lassoOffsetRef, lassoBBoxRef,
     baseCanvasRef, lassoBufferRef, isMouseDownRef, currentStrokeRef,
     pencilSizeRef, eraserSizeRef, currentPressuresRef, brushTypeRef,
-    selectedColorRef, shapeStartRef, cursorPosRef, shapeSizeRef,
+    brushOpacityRef, eraserShapeRef,
+    selectedColorRef, shapeStartRef, cursorPosRef,
     isShapeFilledRef, shiftPressedRef,
   ]);
 
-  /**
-   * Планирует перерисовку overlay через rAF.
-   * Для длинных штрихов пропускает каждый второй кадр.
-   */
   const scheduleOverlay = useCallback(() => {
     if (rafRef.current !== null) {
       pendingRef.current = true;
@@ -322,7 +318,6 @@ export function usePointerInput({
     });
   }, [drawOverlay]);
 
-  /* ─── Wheel (zoom/pan) ─── */
   const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.08 : 0.92;
@@ -353,11 +348,26 @@ export function usePointerInput({
     }
   };
 
-  /* ─── Pointer handlers ─── */
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (hasImageTransformRef.current) return;
+
     const target = e.currentTarget;
     try { target.setPointerCapture(e.pointerId); } catch {}
     if (e.pointerType !== 'mouse') e.preventDefault();
+
+    const pointerWantsPan =
+      e.button === 1 ||
+      activeToolRef.current === 'hand' ||
+      (spacePressedRef.current && e.pointerType === 'mouse');
+
+    if (!pointerWantsPan) {
+      isPanningRef.current = false;
+      panStartRef.current = { x: 0, y: 0 };
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+        spacePressedRef.current = false;
+        spaceUsedForPanRef.current = false;
+      }
+    }
 
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
 
@@ -390,7 +400,7 @@ export function usePointerInput({
 
     const isMiddle = e.button === 1;
     const tool = activeToolRef.current;
-    const handMode = tool === 'hand' || spacePressedRef.current || isMiddle;
+    const handMode = isMiddle || tool === 'hand' || (spacePressedRef.current && e.pointerType === 'mouse');
 
     if (handMode) {
       isPanningRef.current = true;
@@ -473,7 +483,7 @@ export function usePointerInput({
       const { w, h } = canvasSizeRef.current;
       const refData = compCtx.getImageData(0, 0, w, h).data;
       const lctx = lc.getContext('2d')!;
-      floodFill(lctx, refData, pt.x, pt.y, selectedColorRef.current, w, h);
+      floodFill(lctx, refData, pt.x, pt.y, selectedColorRef.current, w, h, fillOpacityRef.current);
       renderComposite();
       const after = snapshot(activeLayerIdRef.current, fid);
       pushHistory(activeLayerIdRef.current, fid, before, after, 'Fill');
@@ -484,6 +494,8 @@ export function usePointerInput({
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (hasImageTransformRef.current) return;
+
     const p = pointersRef.current.get(e.pointerId);
     if (p) { p.x = e.clientX; p.y = e.clientY; }
 
@@ -524,6 +536,16 @@ export function usePointerInput({
     cursorPosRef.current = pt;
 
     if (isPanningRef.current) {
+      const stillWantsPan =
+        spacePressedRef.current ||
+        activeToolRef.current === 'hand' ||
+        e.buttons === 4;
+      if (!stillWantsPan) {
+        isPanningRef.current = false;
+        drawingPointerIdRef.current = null;
+        return;
+      }
+
       const np = { x: e.clientX - panStartRef.current.x, y: e.clientY - panStartRef.current.y };
       panRef.current = np;
       if (canvasWrapperRef.current) {
@@ -579,6 +601,11 @@ export function usePointerInput({
       }, 600);
     }
     if (pointersRef.current.size < 2) pinchStartRef.current = null;
+
+    isPanningRef.current = false;
+    panStartRef.current = { x: 0, y: 0 };
+
+    if (hasImageTransformRef.current) return;
     if (e.pointerId !== drawingPointerIdRef.current) return;
 
     const tool = activeToolRef.current;
@@ -692,18 +719,17 @@ export function usePointerInput({
         const action: FreehandStroke = {
           type: 'stroke',
           tool,
-          brush: tool === 'pencil' ? brushTypeRef.current : undefined,
+          brush: tool === 'pencil' ? brushTypeRef.current : eraserShapeRef.current,
           points: [...currentStrokeRef.current],
           pressures: [...currentPressuresRef.current],
           color: selectedColorRef.current,
           size: tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current,
+          opacity: tool === 'pencil' ? brushOpacityRef.current : 1,
         };
         drawActionToCtx(lc.getContext('2d')!, action);
         renderComposite();
         const after = snapshot(lid, fid);
 
-        // Региональный diff только для кистей, у которых след не выходит за bbox.
-        // Для текстурных и neon-подобных кистей bounds = null → полный diff по canvas.
         let bounds: DiffBounds | null = null;
         if (tool === 'eraser') {
           bounds = strokeBoundsRef.current;
@@ -722,9 +748,10 @@ export function usePointerInput({
         start: shapeStartRef.current,
         end: cursorPosRef.current,
         color: selectedColorRef.current,
-        size: shapeSizeRef.current,
+        size: pencilSizeRef.current,
         isFilled: isShapeFilledRef.current,
         shiftKey: shiftPressedRef.current,
+        brush: brushTypeRef.current,
       };
       drawActionToCtx(lc.getContext('2d')!, action);
       renderComposite();
@@ -754,9 +781,12 @@ export function usePointerInput({
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) pinchStartRef.current = null;
+
+    isPanningRef.current = false;
+    panStartRef.current = { x: 0, y: 0 };
+
     if (e.pointerId === drawingPointerIdRef.current) {
       isMouseDownRef.current = false;
-      isPanningRef.current = false;
       currentStrokeRef.current = [];
       currentPressuresRef.current = [];
       shapeStartRef.current = null;
@@ -773,10 +803,25 @@ export function usePointerInput({
     }
   };
 
-  /* ─── Keyboard ─── */
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+
+      /* Image transform — приоритетная ветка. */
+      if (hasImageTransformRef.current) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          onCommitImageTransform();
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onCancelImageTransform();
+          return;
+        }
+        return;
+      }
+
       if (e.key === 'Shift') shiftPressedRef.current = true;
       if (e.code === 'Space') {
         e.preventDefault();
@@ -787,7 +832,33 @@ export function usePointerInput({
         spacePressedRef.current = true;
       }
 
-      // Ctrl+Delete — удалить текущий кадр.
+      /* ─── Hotkeys инструментов (без модификаторов, только физическая клавиша) ─── */
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        let hotkeyTool: Tool | null = null;
+        switch (e.code) {
+          case 'KeyQ': hotkeyTool = 'pencil'; break;
+          case 'KeyW': hotkeyTool = lastShapeToolRef.current; break;
+          case 'KeyE': hotkeyTool = 'eraser'; break;
+          case 'KeyR': hotkeyTool = 'bucket'; break;
+          case 'KeyT': hotkeyTool = 'eyedropper'; break;
+          case 'KeyY': hotkeyTool = 'lasso'; break;
+          case 'KeyU': hotkeyTool = 'hand'; break;
+        }
+        if (hotkeyTool) {
+          e.preventDefault();
+          onToolShortcut(hotkeyTool);
+          return;
+        }
+      }
+
+      /* ─── Ctrl+Alt+N / Cmd+Alt+N → New Project ─── */
+      if ((e.ctrlKey || e.metaKey) && e.altKey && e.code === 'KeyN') {
+        e.preventDefault();
+        onNewProjectShortcut();
+        return;
+      }
+
+      /* ─── Ctrl+Delete → удалить кадр ─── */
       {
         const ctrlDel = e.ctrlKey || e.metaKey;
         if (ctrlDel && e.code === 'Delete') {
@@ -845,7 +916,6 @@ export function usePointerInput({
       const ctrl = e.ctrlKey || e.metaKey;
       const code = e.code, key = e.key.toLowerCase();
 
-      // Ctrl+M — новый кадр.
       if (ctrl && (code === 'KeyM' || key === 'm' || key === 'ь')) {
         e.preventDefault();
         addFrame();
@@ -886,7 +956,9 @@ export function usePointerInput({
       spacePressedRef.current = false;
       spaceUsedForPanRef.current = false;
       isPanningRef.current = false;
+      panStartRef.current = { x: 0, y: 0 };
       isMouseDownRef.current = false;
+      drawingPointerIdRef.current = null;
       pointersRef.current.clear();
     };
     window.addEventListener('keydown', kd);
@@ -902,7 +974,8 @@ export function usePointerInput({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [undo, redo, scheduleOverlay, renderComposite, commitLasso, cancelLasso, clearLassoState,
       selectFrame, addFrame, deleteFrame, snapshot, pushHistory, getCurrentFrameId, getFrameCanvasById,
-      onTogglePlayback]);
+      onTogglePlayback, onCommitImageTransform, onCancelImageTransform,
+      onToolShortcut, onNewProjectShortcut]);
 
   return {
     getCanvasPt,

@@ -4,6 +4,15 @@ import { interpolatePoints } from './geometry';
 const TAU = Math.PI * 2;
 const rnd = (a = 1) => Math.random() * a;
 
+/* ─── Кэш offscreen-канваса для opacity < 1 ─── */
+let _opacityBuffer: HTMLCanvasElement | null = null;
+function getOpacityBuffer(w: number, h: number): HTMLCanvasElement {
+  if (!_opacityBuffer) _opacityBuffer = document.createElement('canvas');
+  if (_opacityBuffer.width !== w) _opacityBuffer.width = w;
+  if (_opacityBuffer.height !== h) _opacityBuffer.height = h;
+  return _opacityBuffer;
+}
+
 function withAlpha(color: string, a: number): string {
   if (color.startsWith('#')) {
     const h = color.slice(1);
@@ -59,7 +68,8 @@ function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, sz: numbe
   ctx.fill();
 }
 
-export function drawStrokeToCtx(
+/* ─── Реальная отрисовка (без обработки opacity) ─── */
+function drawStrokeToCtxRaw(
   ctx: CanvasRenderingContext2D,
   action: FreehandStroke,
   isEraser: boolean
@@ -73,7 +83,7 @@ export function drawStrokeToCtx(
     'spray', 'sparkle', 'chalk', 'charcoal', 'crayon', 'bristle',
     'oil', 'stars', 'confetti', 'bubbles', 'glitter', 'frost',
     'splatter', 'vine', 'leaves', 'mosaic', 'rings', 'web', 'flame',
-    'galaxy',
+    'galaxy', 'square',
   ];
   if (!NO_INTERP.includes(brush)) {
     const step = Math.max(1, bs * 0.15);
@@ -118,6 +128,30 @@ export function drawStrokeToCtx(
         ctx.moveTo(pts[i-1].x, pts[i-1].y);
         ctx.lineTo(pts[i].x, pts[i].y);
         ctx.stroke();
+      }
+      return;
+    }
+
+    case 'square': {
+      // Квадратная форма (используется ластиком с формой square).
+      const half = bs / 2;
+      if (pts.length === 1) {
+        ctx.fillRect(pts[0].x - half, pts[0].y - half, bs, bs);
+        return;
+      }
+      const stampStep = Math.max(1, bs * 0.4);
+      for (let i = 1; i < pts.length; i++) {
+        const x0 = pts[i-1].x, y0 = pts[i-1].y;
+        const x1 = pts[i].x, y1 = pts[i].y;
+        const dx = x1 - x0, dy = y1 - y0;
+        const len = Math.hypot(dx, dy);
+        const n = Math.max(1, Math.ceil(len / stampStep));
+        for (let k = 0; k <= n; k++) {
+          const t = k / n;
+          const x = x0 + dx * t;
+          const y = y0 + dy * t;
+          ctx.fillRect(x - half, y - half, bs, bs);
+        }
       }
       return;
     }
@@ -1039,4 +1073,40 @@ export function drawStrokeToCtx(
       return;
     }
   }
+}
+
+/* ─── Публичная обёртка: offscreen-композитинг при opacity < 1 ───
+ * Гарантирует, что стыки сегментов внутри одного мазка НЕ накапливают
+ * прозрачность (Photoshop-эффект layer opacity).
+ */
+export function drawStrokeToCtx(
+  ctx: CanvasRenderingContext2D,
+  action: FreehandStroke,
+  isEraser: boolean
+) {
+  const ua = action.opacity ?? 1;
+  if (ua >= 0.999) {
+    drawStrokeToCtxRaw(ctx, action, isEraser);
+    return;
+  }
+  const buf = getOpacityBuffer(ctx.canvas.width, ctx.canvas.height);
+  const bctx = buf.getContext('2d');
+  if (!bctx) {
+    drawStrokeToCtxRaw(ctx, action, isEraser);
+    return;
+  }
+  bctx.clearRect(0, 0, buf.width, buf.height);
+  bctx.globalCompositeOperation = 'source-over';
+  bctx.globalAlpha = 1;
+  drawStrokeToCtxRaw(bctx, { ...action, opacity: 1 }, false);
+
+  ctx.save();
+  ctx.globalAlpha = ua;
+  if (isEraser) {
+    ctx.globalCompositeOperation = 'destination-out';
+  } else {
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.drawImage(buf, 0, 0);
+  ctx.restore();
 }

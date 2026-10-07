@@ -58,10 +58,20 @@ export interface LayerMeta {
   locked: boolean;
 }
 
+/**
+ * Регион canvas: ImageData + смещение, куда его класть через putImageData.
+ * Используется в history вместо полного snapshot canvas.
+ */
+export interface HistoryRegion {
+  data: ImageData;
+  x: number;
+  y: number;
+}
+
 export interface HistoryEntry {
   layerId: string;
-  frameId: string;       // ← НОВОЕ
-  before: ImageData | null;
-  after: ImageData | null;
+  frameId: string;
+  before: HistoryRegion | null;
+  after: HistoryRegion | null;
   label: string;
 }

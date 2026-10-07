@@ -47,25 +47,20 @@ export default function TimelineFrame({
   const activeRing = isActive ? 'ring-2 ring-blue-500' : '';
   const currentLayerMark = isCurrentLayer ? 'opacity-100' : 'opacity-50';
 
-  return (
+    return (
     <button
       onClick={onClick}
-      className={`relative shrink-0 w-9 h-9 rounded border transition-all ${activeRing} ${currentLayerMark} ${
+      className={`relative shrink-0 w-16 h-16 rounded border transition-all ${activeRing} ${currentLayerMark} ${
         isDark ? 'border-[#27272a] hover:border-zinc-500' : 'border-zinc-200 hover:border-zinc-400'
       }`}
       title={`#${index + 1}`}
     >
       <canvas
         ref={thumbRef}
-        width={36}
-        height={36}
+        width={64}
+        height={64}
         className="w-full h-full rounded"
       />
-      <span className={`absolute bottom-0 right-0.5 text-[8px] font-mono leading-none ${
-        isDark ? 'text-zinc-500' : 'text-zinc-400'
-      }`}>
-        {index + 1}
-      </span>
     </button>
   );
 }

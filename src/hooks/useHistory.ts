@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import type { MutableRefObject } from 'react';
 import type { HistoryEntry, HistoryRegion, Point } from '../lib/types';
-import { packHistoryPair } from '../lib/history';
+import { packHistoryPair, type DiffBounds } from '../lib/history';
 
 type CanvasMap = Map<string, Map<string, HTMLCanvasElement>>;
 type LassoMode = 'draw' | 'selected' | 'move' | null;
@@ -64,9 +64,10 @@ export function useHistory({
     before: ImageData | null,
     after: ImageData | null,
     label: string,
+    bounds?: DiffBounds | null,
   ) => {
     redoRef.current = [];
-    const pair = packHistoryPair(before, after);
+    const pair = packHistoryPair(before, after, bounds);
     if (!pair) return;
     historyRef.current.push({
       layerId, frameId,

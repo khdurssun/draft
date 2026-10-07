@@ -34,8 +34,12 @@ export const T = {
     nextFrame: 'Next frame', lastFrame: 'Last frame',
     newFrame: 'New frame', duplicateFrame: 'Duplicate frame',
     deleteFrame: 'Delete frame', clearFrame: 'Clear frame',
-    fps: 'FPS', frame: 'Frame',
+    fps: 'FPS', frame: 'Frame', frames: 'Frames',
     onionSkin: 'Onion skin', onionPrev: 'Previous', onionNext: 'Next', onionOpacity: 'Opacity',
+
+    // timeline hints
+    scrollHint: 'Scroll to navigate',
+    newFrameHint: 'New',
   },
   ru: {
     file: 'Файл', newProject: 'Новый проект', openImage: 'Открыть изображение', export: 'Экспорт',
@@ -72,8 +76,12 @@ export const T = {
     nextFrame: 'Следующий кадр', lastFrame: 'Последний кадр',
     newFrame: 'Новый кадр', duplicateFrame: 'Дублировать кадр',
     deleteFrame: 'Удалить кадр', clearFrame: 'Очистить кадр',
-    fps: 'FPS', frame: 'Кадр',
+    fps: 'FPS', frame: 'Кадр', frames: 'Кадры',
     onionSkin: 'Onion skin', onionPrev: 'Предыдущие', onionNext: 'Следующие', onionOpacity: 'Прозрачность',
+
+    // timeline hints
+    scrollHint: 'Колесо — прокрутка',
+    newFrameHint: 'Новый',
   },
 };
 

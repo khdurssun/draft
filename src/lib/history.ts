@@ -1,8 +1,31 @@
 import type { HistoryRegion } from './types';
 
+export interface DiffBounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function clampBounds(b: DiffBounds, W: number, H: number): DiffBounds | null {
+  const x0 = Math.max(0, Math.floor(b.x));
+  const y0 = Math.max(0, Math.floor(b.y));
+  const x1 = Math.min(W, Math.ceil(b.x + b.w));
+  const y1 = Math.min(H, Math.ceil(b.y + b.h));
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/**
+ * Упаковка пары ImageData в history-регион.
+ *
+ * Если bounds передан — diff ищется только внутри этого прямоугольника.
+ * Если нет — по всему canvas (как раньше).
+ */
 export function packHistoryPair(
   before: ImageData | null,
   after: ImageData | null,
+  bounds?: DiffBounds | null,
 ): { before: HistoryRegion | null; after: HistoryRegion | null } | null {
   if (!before && !after) return null;
 
@@ -20,19 +43,26 @@ export function packHistoryPair(
     };
   }
 
-  const w = before.width;
-  const h = before.height;
-  const b32 = new Uint32Array(before.data.buffer, before.data.byteOffset, w * h);
-  const a32 = new Uint32Array(after.data.buffer, after.data.byteOffset, w * h);
+  const W = before.width;
+  const H = before.height;
 
-  let minX = w;
-  let minY = h;
+  const scan = bounds ? clampBounds(bounds, W, H) : { x: 0, y: 0, w: W, h: H };
+  if (!scan) return null;
+
+  const b32 = new Uint32Array(before.data.buffer, before.data.byteOffset, W * H);
+  const a32 = new Uint32Array(after.data.buffer, after.data.byteOffset, W * H);
+
+  let minX = scan.x + scan.w;
+  let minY = scan.y + scan.h;
   let maxX = -1;
   let maxY = -1;
 
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
+  const xEnd = scan.x + scan.w;
+  const yEnd = scan.y + scan.h;
+
+  for (let y = scan.y; y < yEnd; y++) {
+    const row = y * W;
+    for (let x = scan.x; x < xEnd; x++) {
       if (b32[row + x] !== a32[row + x]) {
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -53,7 +83,7 @@ export function packHistoryPair(
   const aOut32 = new Uint32Array(afterRegion.data.buffer);
 
   for (let y = 0; y < bh; y++) {
-    const srcRow = (minY + y) * w + minX;
+    const srcRow = (minY + y) * W + minX;
     const dstRow = y * bw;
     bOut32.set(b32.subarray(srcRow, srcRow + bw), dstRow);
     aOut32.set(a32.subarray(srcRow, srcRow + bw), dstRow);

@@ -1,9 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Play, Pause, Square, SkipBack, SkipForward, ChevronFirst, ChevronLast,
-  Plus, Copy, Trash2, Eraser, ChevronUp, ChevronDown, Layers,
+  Plus, Copy, Trash2, Eraser, ChevronUp, ChevronDown, ChevronUp as CaretUp, ChevronDown as CaretDown,
 } from 'lucide-react';
-import type { LayerMeta } from '../lib/types';
 import type { AnimationFrame } from '../animation/types';
 import type { TKey } from '../i18n/translations';
 import TimelineFrame from './TimelineFrame';
@@ -14,7 +13,6 @@ interface Props {
   border: string;
   muted: string;
   btnBase: string;
-  layers: LayerMeta[];
   activeLayerId: string;
   frameOrder: string[];
   frameMeta: Map<string, AnimationFrame>;
@@ -29,7 +27,6 @@ interface Props {
   timelineVersion: number;
   t: (k: TKey) => string;
   onSelectFrame: (idx: number) => void;
-  onSelectLayer: (id: string) => void;
   onPlayPause: () => void;
   onStop: () => void;
   onFirst: () => void;
@@ -50,20 +47,113 @@ const COLLAPSED_HEIGHT = 42;
 const MAX_HEIGHT = 420;
 const DEFAULT_EXPANDED_HEIGHT = 260;
 
+/* ─── Числовое поле с кастомными стрелками ▲▼ ─── */
+interface NumberFieldProps {
+  value: number;
+  min: number;
+  max: number;
+  fallback: number;
+  onChange: (n: number) => void;
+  isDark: boolean;
+  width: string;
+}
+
+function NumberField({ value, min, max, fallback, onChange, isDark, width }: NumberFieldProps) {
+  const clamp = (n: number) => Math.max(min, Math.min(max, Number.isFinite(n) ? n : fallback));
+
+  const baseInput = [
+    `${width} h-7 pl-1.5 pr-5 rounded-md border text-xs font-mono tabular-nums text-center`,
+    'outline-none transition-colors',
+    'appearance-none',
+    '[&::-webkit-outer-spin-button]:appearance-none',
+    '[&::-webkit-inner-spin-button]:appearance-none',
+    '[&::-moz-appearance]:textfield',
+    isDark
+      ? 'bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500'
+      : 'bg-white border-zinc-300 text-zinc-900 focus:border-zinc-500',
+  ].join(' ');
+
+  const arrowBtn = [
+    'flex items-center justify-center w-4 h-[13px] transition-colors',
+    isDark
+      ? 'text-zinc-500 hover:text-zinc-100 active:text-blue-400'
+      : 'text-zinc-400 hover:text-zinc-900 active:text-blue-500',
+  ].join(' ');
+
+  return (
+    <div className="relative inline-flex items-center">
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(clamp(Number(e.target.value)))}
+        className={baseInput}
+      />
+      <div className="absolute right-0.5 top-1/2 -translate-y-1/2 flex flex-col">
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => onChange(clamp(value + 1))}
+          className={arrowBtn}
+          aria-label="increment"
+        >
+          <CaretUp className="w-2.5 h-2.5" strokeWidth={2.5} />
+        </button>
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => onChange(clamp(value - 1))}
+          className={arrowBtn}
+          aria-label="decrement"
+        >
+          <CaretDown className="w-2.5 h-2.5" strokeWidth={2.5} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Timeline({
   isDark, panel, border, muted, btnBase,
-  layers, activeLayerId, frameOrder,
+  activeLayerId, frameOrder,
   currentFrame, fps, isPlaying,
   onionPrev, onionNext, onionOpacity,
   canvasSize, getFrameCanvas, timelineVersion, t,
-  onSelectFrame, onSelectLayer,
+  onSelectFrame,
   onPlayPause, onStop, onFirst, onPrev, onNext, onLast,
   onAddFrame, onDuplicateFrame, onDeleteFrame, onClearFrame,
   onSetFps, onSetOnionPrev, onSetOnionNext, onSetOnionOpacity,
 }: Props) {
   const [height, setHeight] = useState<number>(COLLAPSED_HEIGHT);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const frameRefsRef = useRef<Map<number, HTMLDivElement>>(new Map());
+  const addButtonRef = useRef<HTMLButtonElement | null>(null);
+  const prevFrameCountRef = useRef<number>(frameOrder.length);
   const isExpanded = height > COLLAPSED_HEIGHT + 8;
+
+  /* ─── Автоскролл ─── */
+  useEffect(() => {
+    if (!isExpanded) return;
+    const grew = frameOrder.length > prevFrameCountRef.current;
+    prevFrameCountRef.current = frameOrder.length;
+
+    if (grew) {
+      addButtonRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'end',
+      });
+    } else {
+      const el = frameRefsRef.current.get(currentFrame);
+      el?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    }
+  }, [currentFrame, frameOrder.length, isExpanded]);
 
   const onHandlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -96,9 +186,19 @@ export default function Timeline({
     setHeight(prev => prev <= COLLAPSED_HEIGHT ? DEFAULT_EXPANDED_HEIGHT : COLLAPSED_HEIGHT);
   };
 
+  const onStripWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    const el = stripRef.current;
+    if (!el) return;
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    el.scrollLeft += e.deltaY;
+  };
+
   const iconBtn = `w-8 h-8 rounded-md flex items-center justify-center transition-colors ${btnBase}`;
-  const inputBg = isDark ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-white border-zinc-300 text-zinc-900';
-  const reversedLayers = [...layers].reverse();
+
+  const stripBg = isDark ? 'bg-[#0a0a0b]' : 'bg-zinc-50';
+  const labelColor = isDark ? 'text-zinc-500' : 'text-zinc-400';
+  const counterBg = isDark ? 'bg-zinc-800/60 text-zinc-300' : 'bg-white text-zinc-700';
 
   return (
     <div
@@ -127,7 +227,6 @@ export default function Timeline({
 
       {/* Шапка управления */}
       <div className={`h-[42px] flex items-center justify-between px-3 border-t ${border} gap-4`}>
-        {/* Воспроизведение */}
         <div className="flex items-center gap-1">
           <button onClick={onFirst} className={iconBtn} title={t('firstFrame')}>
             <ChevronFirst className="w-4 h-4" strokeWidth={1.8} />
@@ -142,7 +241,7 @@ export default function Timeline({
                 ? 'bg-blue-600 text-white hover:bg-blue-500'
                 : (isDark ? 'bg-zinc-800 text-zinc-100 hover:bg-zinc-700' : 'bg-zinc-200 text-zinc-900 hover:bg-zinc-300')
             }`}
-            title={isPlaying ? t('pause') : t('play')}
+            title={`${isPlaying ? t('pause') : t('play')} · Space`}
           >
             {isPlaying
               ? <Pause className="w-4 h-4" strokeWidth={2} />
@@ -161,7 +260,6 @@ export default function Timeline({
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
-        {/* Счётчик и FPS */}
         <div className="flex items-center gap-3">
           <div className={`text-xs font-mono font-medium tabular-nums px-2.5 py-1 rounded-md ${
             isDark ? 'bg-zinc-800/80 text-zinc-200' : 'bg-zinc-100 text-zinc-800'
@@ -171,22 +269,22 @@ export default function Timeline({
 
           <div className="flex items-center gap-1.5">
             <span className={`text-xs font-semibold uppercase tracking-wider ${muted}`}>{t('fps')}</span>
-            <input
-              type="number"
+            <NumberField
+              value={fps}
               min={1}
               max={60}
-              value={fps}
-              onChange={(e) => onSetFps(Math.max(1, Math.min(60, Number(e.target.value) || 12)))}
-              className={`w-12 px-1.5 py-1 rounded-md border text-xs font-mono text-center focus:outline-none focus:border-zinc-500 ${inputBg}`}
+              fallback={12}
+              onChange={onSetFps}
+              isDark={isDark}
+              width="w-14"
             />
           </div>
         </div>
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
-        {/* Действия с кадрами */}
         <div className="flex items-center gap-1">
-          <button onClick={onAddFrame} className={iconBtn} title={t('newFrame')}>
+          <button onClick={onAddFrame} className={iconBtn} title={`${t('newFrame')} · Ctrl+M`}>
             <Plus className="w-4 h-4" strokeWidth={1.8} />
           </button>
           <button onClick={onDuplicateFrame} className={iconBtn} title={t('duplicateFrame')}>
@@ -199,7 +297,7 @@ export default function Timeline({
             onClick={onDeleteFrame}
             disabled={frameOrder.length <= 1}
             className={`${iconBtn} disabled:opacity-30 hover:!text-red-400`}
-            title={t('deleteFrame')}
+            title={`${t('deleteFrame')} · Ctrl+Del`}
           >
             <Trash2 className="w-4 h-4" strokeWidth={1.8} />
           </button>
@@ -207,42 +305,44 @@ export default function Timeline({
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
-        {/* Onion Skin */}
         <div className="flex items-center gap-2">
           <span className={`text-xs font-semibold uppercase tracking-wider ${muted}`}>
             {t('onionSkin')}
           </span>
           <div className="flex items-center gap-1">
             <span className={`text-[10px] font-medium uppercase ${muted}`}>{t('onionPrev')}</span>
-            <input
-              type="number"
+            <NumberField
+              value={onionPrev}
               min={0}
               max={5}
-              value={onionPrev}
-              onChange={(e) => onSetOnionPrev(Math.max(0, Math.min(5, Number(e.target.value) || 0)))}
-              className={`w-10 px-1 py-1 rounded-md border text-xs font-mono text-center focus:outline-none focus:border-zinc-500 ${inputBg}`}
+              fallback={0}
+              onChange={onSetOnionPrev}
+              isDark={isDark}
+              width="w-12"
             />
           </div>
           <div className="flex items-center gap-1">
             <span className={`text-[10px] font-medium uppercase ${muted}`}>{t('onionNext')}</span>
-            <input
-              type="number"
+            <NumberField
+              value={onionNext}
               min={0}
               max={5}
-              value={onionNext}
-              onChange={(e) => onSetOnionNext(Math.max(0, Math.min(5, Number(e.target.value) || 0)))}
-              className={`w-10 px-1 py-1 rounded-md border text-xs font-mono text-center focus:outline-none focus:border-zinc-500 ${inputBg}`}
+              fallback={0}
+              onChange={onSetOnionNext}
+              isDark={isDark}
+              width="w-12"
             />
           </div>
           <div className="flex items-center gap-1">
             <span className={`text-[10px] font-medium uppercase ${muted}`}>{t('onionOpacity')}</span>
-            <input
-              type="number"
+            <NumberField
+              value={Math.round(onionOpacity * 100)}
               min={5}
               max={80}
-              value={Math.round(onionOpacity * 100)}
-              onChange={(e) => onSetOnionOpacity(Math.max(5, Math.min(80, Number(e.target.value) || 30)) / 100)}
-              className={`w-12 px-1 py-1 rounded-md border text-xs font-mono text-center focus:outline-none focus:border-zinc-500 ${inputBg}`}
+              fallback={30}
+              onChange={(n) => onSetOnionOpacity(n / 100)}
+              isDark={isDark}
+              width="w-14"
             />
             <span className={`text-xs ${muted}`}>%</span>
           </div>
@@ -250,7 +350,6 @@ export default function Timeline({
 
         <div className={`w-px h-5 ${isDark ? 'bg-zinc-800' : 'bg-zinc-200'}`} />
 
-        {/* Разворот / Сворачивание */}
         <button
           onClick={() => setHeight(prev => prev <= COLLAPSED_HEIGHT ? DEFAULT_EXPANDED_HEIGHT : COLLAPSED_HEIGHT)}
           className={iconBtn}
@@ -262,83 +361,86 @@ export default function Timeline({
         </button>
       </div>
 
-      {/* Сетка развёрнутого таймлайна */}
+      {/* Лента кадров */}
       {isExpanded && (
-        <div className="flex-1 overflow-auto border-t border-inherit">
-          {layers.length === 0 ? (
-            /* Пустое состояние при отсутствии слоёв */
-            <div className="flex flex-col items-center justify-center h-full p-6 text-center">
-              <Layers className={`w-8 h-8 mb-2 ${muted} opacity-40`} strokeWidth={1.5} />
-              <p className={`text-xs font-medium ${muted}`}>Нет доступных слоёв</p>
+        <div className={`flex-1 border-t ${border} ${stripBg} flex flex-col overflow-hidden`}>
+          <div className={`flex items-center justify-between px-3 py-1.5 border-b ${border}`}>
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] font-semibold uppercase tracking-[0.15em] ${labelColor}`}>
+                {t('frames')}
+              </span>
+              <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded ${counterBg}`}>
+                {currentFrame + 1} / {frameOrder.length}
+              </span>
             </div>
-          ) : (
-            <div className="min-w-max">
-              {/* Шапка кадров */}
-              <div
-                className="flex items-center sticky top-0 z-10 border-b border-inherit"
-                style={{ background: isDark ? '#0f0f10' : '#ffffff' }}
-              >
-                <div className={`w-36 shrink-0 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider ${muted} border-r ${border}`}>
-                  {t('layers')}
-                </div>
-                {frameOrder.map((_, idx) => (
-                  <div
-                    key={idx}
-                    className={`w-12 shrink-0 text-center text-xs font-mono font-medium tabular-nums py-1.5 border-r ${border} ${
-                      idx === currentFrame
-                        ? (isDark ? 'bg-blue-600/20 text-blue-300 font-semibold' : 'bg-blue-100 text-blue-700 font-semibold')
-                        : muted
-                    }`}
-                  >
-                    {idx + 1}
-                  </div>
-                ))}
-              </div>
+            <span className={`text-[10px] ${labelColor}`}>{t('scrollHint')}</span>
+          </div>
 
-              {/* Строки слоёв */}
-              {reversedLayers.map((layer) => {
-                const isActiveLayer = layer.id === activeLayerId;
+          <div
+            ref={stripRef}
+            onWheel={onStripWheel}
+            className="flex-1 overflow-x-auto overflow-y-hidden scroll-thin"
+          >
+            <div className="h-full flex items-start gap-2 px-3 py-3 min-w-max">
+              {frameOrder.map((fid, idx) => {
+                const isActive = idx === currentFrame;
                 return (
-                  <div key={layer.id} className="flex items-center">
+                  <div
+                    key={fid}
+                    ref={(el) => {
+                      if (el) frameRefsRef.current.set(idx, el);
+                      else frameRefsRef.current.delete(idx);
+                    }}
+                    className="shrink-0"
+                  >
                     <button
-                      onClick={() => onSelectLayer(layer.id)}
-                      className={`w-36 shrink-0 px-3 py-2 text-xs font-medium text-left truncate border-r border-b ${border} transition-colors ${
-                        isActiveLayer
-                          ? (isDark ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-200 text-zinc-900')
-                          : (isDark ? 'text-zinc-400 hover:bg-zinc-800/50' : 'text-zinc-600 hover:bg-zinc-100')
-                      } ${layer.locked ? 'opacity-50' : ''}`}
-                      title={layer.name}
+                      onClick={() => onSelectFrame(idx)}
+                      className={`group flex flex-col items-center gap-1 rounded-md p-1 transition-colors ${
+                        isActive
+                          ? (isDark ? 'bg-blue-500/10' : 'bg-blue-50')
+                          : 'hover:bg-black/5 dark:hover:bg-white/5'
+                      }`}
+                      title={`${t('frame')} ${idx + 1}`}
                     >
-                      {layer.visible ? '' : '· '}{layer.name}
+                      <TimelineFrame
+                        layerId={activeLayerId}
+                        frameId={fid}
+                        index={idx}
+                        isActive={isActive}
+                        isCurrentLayer={true}
+                        getFrameCanvas={getFrameCanvas}
+                        canvasSize={canvasSize}
+                        isDark={isDark}
+                        onClick={() => onSelectFrame(idx)}
+                        version={timelineVersion}
+                      />
+                      <span className={`text-[10px] font-mono tabular-nums leading-none ${
+                        isActive
+                          ? (isDark ? 'text-blue-300' : 'text-blue-700')
+                          : muted
+                      }`}>
+                        {idx + 1}
+                      </span>
                     </button>
-                    <div className="flex border-b border-inherit">
-                      {frameOrder.map((fid, idx) => (
-                        <div
-                          key={fid}
-                          className={`w-12 shrink-0 flex items-center justify-center py-1.5 border-r ${border} ${
-                            isDark ? 'bg-zinc-900/30' : 'bg-zinc-50/50'
-                          }`}
-                        >
-                          <TimelineFrame
-                            layerId={layer.id}
-                            frameId={fid}
-                            index={idx}
-                            isActive={idx === currentFrame}
-                            isCurrentLayer={isActiveLayer}
-                            getFrameCanvas={getFrameCanvas}
-                            canvasSize={canvasSize}
-                            isDark={isDark}
-                            onClick={() => onSelectFrame(idx)}
-                            version={timelineVersion}
-                          />
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 );
               })}
+
+              <button
+                ref={addButtonRef}
+                onClick={onAddFrame}
+                title={`${t('newFrame')} · Ctrl+M`}
+                className={`shrink-0 flex flex-col items-center justify-center gap-1 w-16 h-16 rounded-md border-2 border-dashed transition-colors ${
+                  isDark
+                    ? 'border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 hover:bg-white/5'
+                    : 'border-zinc-300 text-zinc-400 hover:border-zinc-400 hover:text-zinc-600 hover:bg-black/5'
+                }`}
+              >
+                <Plus className="w-5 h-5" strokeWidth={1.8} />
+                <span className="text-[9px] font-medium uppercase tracking-wider">{t('newFrameHint')}</span>
+              </button>
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>

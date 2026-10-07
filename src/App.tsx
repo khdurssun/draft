@@ -361,14 +361,14 @@ export default function App() {
     lassoModeRef, lassoMoveStartRef, lassoPreSnapshotRef,
     prevTool,
     renderComposite, getCurrentFrameId, getFrameCanvasById,
-    findLayer, selectFrame, addFrame, bumpThumbs, bumpTimeline,
+    findLayer, selectFrame, addFrame, deleteFrame, bumpThumbs, bumpTimeline,
     snapshot, pushHistory, commitLasso, cancelLasso, clearLassoState, undo, redo,
     setSelectedColor, setHexInput, setRgbInput, setHsv, setActiveTool,
     setActiveMenu, setActivePopover, setIsShapeMenuOpen,
     setShowSettings, setShowNewProject, setExportOpen, setHasSelection,
+    onTogglePlayback: onPlayPause,
   });
 
-  /* ─── Layer switch ─── */
   useEffect(() => {
     if (lastActiveLayerIdRef.current !== activeLayerId) {
       if (lassoModeRef.current !== null) commitLasso('Lasso');
@@ -724,13 +724,12 @@ export default function App() {
         </div>
       </main>
 
-      <Timeline
+            <Timeline
         isDark={isDark}
         panel={panel}
         border={border}
         muted={muted}
         btnBase={btnBase}
-        layers={layersRef.current}
         activeLayerId={activeLayerId}
         frameOrder={frameOrderRef.current}
         frameMeta={frameMetaRef.current}
@@ -745,7 +744,6 @@ export default function App() {
         timelineVersion={timelineVersion}
         t={t}
         onSelectFrame={selectFrame}
-        onSelectLayer={(id) => { setActiveLayerId(id); activeLayerIdRef.current = id; }}
         onPlayPause={onPlayPause}
         onStop={onStopPlayback}
         onFirst={() => selectFrame(0)}

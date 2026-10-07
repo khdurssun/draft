@@ -7,11 +7,36 @@ import { drawActionToCtx } from '../lib/actions';
 import { drawStrokeToCtx } from '../lib/brushes';
 import { drawShapeToCtx } from '../lib/shapes';
 import { rgbToHex, rgbToHsv } from '../lib/color';
+import type { DiffBounds } from '../lib/history';
 
 type LassoMode = 'draw' | 'selected' | 'move' | null;
 
+/** Кисти, у которых визуальный след выходит за пределы bbox штриха:
+ *  свечение (neon / glow / flame / galaxy), разлёт частиц (spray / sparkle),
+ *  мягкие края (airbrush / mist / fog), и т.п.
+ *  Для них нельзя делать региональный diff по bounds — undo не уберёт «хвост».
+ *  Используется для двух задач:
+ *    1) overlay рисуется полностью + троттлится (см. drawOverlay);
+ *    2) pushHistory вызывается БЕЗ bounds (полный diff по canvas).
+ */
+const TEXTURED_BRUSHES: BrushType[] = [
+  // soft
+  'airbrush', 'glow', 'watercolor', 'neon',
+  'mist', 'smoke', 'cloud', 'aurora', 'fog',
+  // textured
+  'spray', 'chalk', 'charcoal', 'crayon', 'bristle',
+  'oil', 'pastel', 'sand', 'rust', 'concrete', 'wood', 'fabric',
+  // special
+  'sparkle', 'stars', 'confetti', 'bubbles', 'glitter',
+  'frost', 'splatter', 'vine', 'leaves',
+  // grand
+  'mosaic', 'rings', 'web', 'flame', 'galaxy',
+];
+
+/** Порог количества точек, после которого overlay рендерится не чаще 1 раза в 2 кадра. */
+const LONG_STROKE_THRESHOLD = 200;
+
 export interface UsePointerInputArgs {
-  /* Refs, которыми владеет App.tsx (общие с другими хуками/JSX) */
   activeToolRef: MutableRefObject<Tool>;
   selectedColorRef: MutableRefObject<string>;
   pencilSizeRef: MutableRefObject<number>;
@@ -26,7 +51,6 @@ export interface UsePointerInputArgs {
   frameOrderRef: MutableRefObject<string[]>;
   currentFrameRef: MutableRefObject<number>;
 
-  /* Canvas / DOM refs */
   baseCanvasRef: MutableRefObject<HTMLCanvasElement | null>;
   overlayCanvasRef: MutableRefObject<HTMLCanvasElement | null>;
   canvasWrapperRef: MutableRefObject<HTMLDivElement | null>;
@@ -36,7 +60,6 @@ export interface UsePointerInputArgs {
   previewSizeRef: MutableRefObject<number | null>;
   previewActiveRef: MutableRefObject<boolean>;
 
-  /* Lasso refs (живут в App.tsx — общие с useHistory) */
   lassoPathRef: MutableRefObject<Point[]>;
   lassoPolyRef: MutableRefObject<Point[]>;
   lassoBufferRef: MutableRefObject<HTMLCanvasElement | null>;
@@ -46,22 +69,19 @@ export interface UsePointerInputArgs {
   lassoMoveStartRef: MutableRefObject<Point | null>;
   lassoPreSnapshotRef: MutableRefObject<ImageData | null>;
 
-  /* State, читаемое pointer handler'ами */
   prevTool: Tool;
 
-  /* Колбэки из App.tsx */
   renderComposite: () => void;
   getCurrentFrameId: () => string | null;
   getFrameCanvasById: (layerId: string, frameId: string) => HTMLCanvasElement | null;
 
-  /* Из useProjectOps */
   findLayer: (id: string) => { id: string; name: string; visible: boolean; locked: boolean } | null;
   selectFrame: (idx: number) => void;
   addFrame: () => void;
+  deleteFrame: () => void;
   bumpThumbs: () => void;
   bumpTimeline: () => void;
 
-  /* Из useHistory */
   snapshot: (layerId: string, frameId: string) => ImageData | null;
   pushHistory: (
     layerId: string,
@@ -69,6 +89,7 @@ export interface UsePointerInputArgs {
     before: ImageData | null,
     after: ImageData | null,
     label: string,
+    bounds?: DiffBounds | null,
   ) => void;
   commitLasso: (label?: string) => void;
   cancelLasso: () => void;
@@ -76,7 +97,6 @@ export interface UsePointerInputArgs {
   undo: () => void;
   redo: () => void;
 
-  /* Setters из App.tsx */
   setSelectedColor: (v: string) => void;
   setHexInput: (v: string) => void;
   setRgbInput: (v: { r: string; g: string; b: string }) => void;
@@ -89,6 +109,8 @@ export interface UsePointerInputArgs {
   setShowNewProject: (v: boolean) => void;
   setExportOpen: (v: boolean) => void;
   setHasSelection: (v: boolean) => void;
+
+  onTogglePlayback: () => void;
 }
 
 export function usePointerInput({
@@ -101,13 +123,14 @@ export function usePointerInput({
   lassoModeRef, lassoMoveStartRef, lassoPreSnapshotRef,
   prevTool,
   renderComposite, getCurrentFrameId, getFrameCanvasById,
-  findLayer, selectFrame, addFrame, bumpThumbs, bumpTimeline,
+  findLayer, selectFrame, addFrame, deleteFrame, bumpThumbs, bumpTimeline,
   snapshot, pushHistory, commitLasso, cancelLasso, clearLassoState, undo, redo,
   setSelectedColor, setHexInput, setRgbInput, setHsv, setActiveTool,
   setActiveMenu, setActivePopover, setIsShapeMenuOpen,
   setShowSettings, setShowNewProject, setExportOpen, setHasSelection,
+  onTogglePlayback,
 }: UsePointerInputArgs) {
-  /* ─── Pointer-only refs — переехали внутрь hook'а ─── */
+  /* ─── Pointer-only refs ─── */
   const currentStrokeRef = useRef<Point[]>([]);
   const currentPressuresRef = useRef<number[]>([]);
   const shapeStartRef = useRef<Point | null>(null);
@@ -124,7 +147,15 @@ export function usePointerInput({
   const penActiveRef = useRef(false);
   const penReleaseTimerRef = useRef<number | null>(null);
 
-  /* ─── Local type guard (та же формула, что в App.tsx) ─── */
+  // Space: отслеживаем, был ли pan во время удержания, чтобы понять tap vs hold.
+  const spaceDownTimeRef = useRef<number>(0);
+  const spaceUsedForPanRef = useRef(false);
+
+  /* ─── Оптимизация overlay: rAF-throttle для длинных штрихов ─── */
+  const skipNextRef = useRef<boolean>(false);
+  const pendingRef = useRef<boolean>(false);
+  const strokeBoundsRef = useRef<DiffBounds | null>(null); // bbox текущего штриха (для history)
+
   const isShapeTool = (tl: Tool): tl is ShapeTool =>
     tl === 'line' || tl === 'rectangle' || tl === 'circle' || tl === 'triangle';
 
@@ -138,7 +169,27 @@ export function usePointerInput({
     };
   }, [containerRef, panRef, zoomRef]);
 
-  /* ─── Overlay ─── */
+  /* ─── Bounds helper ─── */
+  const updateStrokeBounds = useCallback((p: Point, radius: number) => {
+    const cur = strokeBoundsRef.current;
+    const pad = radius + 4;
+    if (!cur) {
+      strokeBoundsRef.current = { x: p.x - pad, y: p.y - pad, w: pad * 2, h: pad * 2 };
+      return;
+    }
+    const x0 = Math.min(cur.x, p.x - pad);
+    const y0 = Math.min(cur.y, p.y - pad);
+    const x1 = Math.max(cur.x + cur.w, p.x + pad);
+    const y1 = Math.max(cur.y + cur.h, p.y + pad);
+    cur.x = x0; cur.y = y0; cur.w = x1 - x0; cur.h = y1 - y0;
+  }, []);
+
+  /* ─── Overlay ───
+   * Overlay всегда рисует ПОЛНЫЙ штрих каждый раз — как раньше.
+   * Оптимизация только одна: для длинных штрихов (>= LONG_STROKE_THRESHOLD точек)
+   * перерисовка идёт не чаще, чем 1 раз в 2 кадра. Это даёт ~30 fps на длинных
+   * штрихах любой кисти, не теряя визуальной идентичности overlay и финала.
+   */
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
@@ -238,10 +289,35 @@ export function usePointerInput({
     isShapeFilledRef, shiftPressedRef,
   ]);
 
+  /**
+   * Планирует перерисовку overlay через rAF.
+   * Для длинных штрихов пропускает каждый второй кадр.
+   */
   const scheduleOverlay = useCallback(() => {
-    if (rafRef.current !== null) return;
+    if (rafRef.current !== null) {
+      pendingRef.current = true;
+      return;
+    }
+    const pts = currentStrokeRef.current;
+    const isLong = pts.length >= LONG_STROKE_THRESHOLD;
+    const shouldSkip = isLong && skipNextRef.current;
+    skipNextRef.current = isLong ? !skipNextRef.current : false;
+
+    if (shouldSkip) {
+      pendingRef.current = true;
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        if (pendingRef.current) {
+          pendingRef.current = false;
+          scheduleOverlay();
+        }
+      });
+      return;
+    }
+
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
+      pendingRef.current = false;
       drawOverlay();
     });
   }, [drawOverlay]);
@@ -320,6 +396,7 @@ export function usePointerInput({
       isPanningRef.current = true;
       panStartRef.current = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
       drawingPointerIdRef.current = e.pointerId;
+      if (spacePressedRef.current) spaceUsedForPanRef.current = true;
       return;
     }
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -358,6 +435,10 @@ export function usePointerInput({
     if (tool === 'pencil' || tool === 'eraser') {
       currentStrokeRef.current = [pt];
       currentPressuresRef.current = [pressure];
+      skipNextRef.current = false;
+      pendingRef.current = false;
+      const size = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
+      strokeBoundsRef.current = { x: pt.x - size - 4, y: pt.y - size - 4, w: (size + 4) * 2, h: (size + 4) * 2 };
       scheduleOverlay();
     } else if (isShapeTool(tool)) {
       shapeStartRef.current = pt;
@@ -448,6 +529,7 @@ export function usePointerInput({
       if (canvasWrapperRef.current) {
         canvasWrapperRef.current.style.transform = `translate3d(${np.x}px, ${np.y}px, 0) scale(${zoomRef.current})`;
       }
+      if (spacePressedRef.current) spaceUsedForPanRef.current = true;
       return;
     }
 
@@ -478,6 +560,8 @@ export function usePointerInput({
       const pressure = e.pointerType === 'pen' ? Math.max(0.05, e.pressure) : 0.5;
       currentStrokeRef.current.push(pt);
       currentPressuresRef.current.push(pressure);
+      const size = tool === 'pencil' ? pencilSizeRef.current : eraserSizeRef.current;
+      updateStrokeBounds(pt, size);
       scheduleOverlay();
     } else if (isMouseDownRef.current && shapeStartRef.current) {
       scheduleOverlay();
@@ -590,6 +674,7 @@ export function usePointerInput({
       currentPressuresRef.current = [];
       shapeStartRef.current = null;
       drawingPointerIdRef.current = null;
+      strokeBoundsRef.current = null;
       const o = overlayCanvasRef.current;
       if (o) {
         const { w, h } = canvasSizeRef.current;
@@ -616,7 +701,18 @@ export function usePointerInput({
         drawActionToCtx(lc.getContext('2d')!, action);
         renderComposite();
         const after = snapshot(lid, fid);
-        pushHistory(lid, fid, before, after, tool);
+
+        // Региональный diff только для кистей, у которых след не выходит за bbox.
+        // Для текстурных и neon-подобных кистей bounds = null → полный diff по canvas.
+        let bounds: DiffBounds | null = null;
+        if (tool === 'eraser') {
+          bounds = strokeBoundsRef.current;
+        } else {
+          const b = brushTypeRef.current;
+          const isTextured = TEXTURED_BRUSHES.indexOf(b) !== -1;
+          bounds = isTextured ? null : strokeBoundsRef.current;
+        }
+        pushHistory(lid, fid, before, after, tool, bounds);
         bumpThumbs(); bumpTimeline();
       }
     } else if (shapeStartRef.current && isShapeTool(tool)) {
@@ -642,6 +738,9 @@ export function usePointerInput({
     currentPressuresRef.current = [];
     shapeStartRef.current = null;
     drawingPointerIdRef.current = null;
+    strokeBoundsRef.current = null;
+    skipNextRef.current = false;
+    pendingRef.current = false;
 
     const o = overlayCanvasRef.current;
     if (o) {
@@ -662,6 +761,9 @@ export function usePointerInput({
       currentPressuresRef.current = [];
       shapeStartRef.current = null;
       drawingPointerIdRef.current = null;
+      strokeBoundsRef.current = null;
+      skipNextRef.current = false;
+      pendingRef.current = false;
       const o = overlayCanvasRef.current;
       if (o) {
         const { w, h } = canvasSizeRef.current;
@@ -676,7 +778,24 @@ export function usePointerInput({
     const kd = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
       if (e.key === 'Shift') shiftPressedRef.current = true;
-      if (e.code === 'Space') { e.preventDefault(); spacePressedRef.current = true; }
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (!spacePressedRef.current) {
+          spaceDownTimeRef.current = performance.now();
+          spaceUsedForPanRef.current = false;
+        }
+        spacePressedRef.current = true;
+      }
+
+      // Ctrl+Delete — удалить текущий кадр.
+      {
+        const ctrlDel = e.ctrlKey || e.metaKey;
+        if (ctrlDel && e.code === 'Delete') {
+          e.preventDefault();
+          deleteFrame();
+          return;
+        }
+      }
 
       const mode = lassoModeRef.current;
       if (activeToolRef.current === 'lasso' && mode !== null) {
@@ -725,6 +844,14 @@ export function usePointerInput({
       }
       const ctrl = e.ctrlKey || e.metaKey;
       const code = e.code, key = e.key.toLowerCase();
+
+      // Ctrl+M — новый кадр.
+      if (ctrl && (code === 'KeyM' || key === 'm' || key === 'ь')) {
+        e.preventDefault();
+        addFrame();
+        return;
+      }
+
       if (ctrl) {
         if ((code === 'KeyZ' || key === 'z' || key === 'я') && !e.shiftKey) { e.preventDefault(); undo(); }
         else if ((code === 'KeyY' || key === 'y' || key === 'н') || ((code === 'KeyZ' || key === 'z' || key === 'я') && e.shiftKey)) { e.preventDefault(); redo(); }
@@ -741,11 +868,23 @@ export function usePointerInput({
     };
     const ku = (e: KeyboardEvent) => {
       if (e.key === 'Shift') shiftPressedRef.current = false;
-      if (e.code === 'Space') spacePressedRef.current = false;
+      if (e.code === 'Space') {
+        const wasDown = spacePressedRef.current;
+        spacePressedRef.current = false;
+        if (wasDown && !spaceUsedForPanRef.current) {
+          const dur = performance.now() - spaceDownTimeRef.current;
+          if (dur < 300) {
+            e.preventDefault();
+            onTogglePlayback();
+          }
+        }
+        spaceUsedForPanRef.current = false;
+      }
     };
     const blur = () => {
       shiftPressedRef.current = false;
       spacePressedRef.current = false;
+      spaceUsedForPanRef.current = false;
       isPanningRef.current = false;
       isMouseDownRef.current = false;
       pointersRef.current.clear();
@@ -762,7 +901,8 @@ export function usePointerInput({
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [undo, redo, scheduleOverlay, renderComposite, commitLasso, cancelLasso, clearLassoState,
-      selectFrame, addFrame, snapshot, pushHistory, getCurrentFrameId, getFrameCanvasById]);
+      selectFrame, addFrame, deleteFrame, snapshot, pushHistory, getCurrentFrameId, getFrameCanvasById,
+      onTogglePlayback]);
 
   return {
     getCanvasPt,

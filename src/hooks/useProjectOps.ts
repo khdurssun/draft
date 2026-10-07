@@ -297,42 +297,74 @@ export function useProjectOps({
     canvasBgRef, layersRef, framesRef, setActiveMenu, setExportOpen,
   ]);
 
+  /**
+   * Импорт изображения в ТЕКУЩИЙ активный кадр ТЕКУЩЕГО активного слоя.
+   * Поверх существующего содержимого. Не создаёт новый слой.
+   * Поддерживает Undo/Redo через pushHistory.
+   */
   const handleOpenProject = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const lid = activeLayerIdRef.current;
+    const fid = frameOrderRef.current[currentFrameRef.current];
+    if (!lid || !fid) {
+      setActiveMenu(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const layer = findLayer(lid);
+    if (!layer || layer.locked || !layer.visible) {
+      // Заблокированный или невидимый слой — как при обычном рисовании.
+      setActiveMenu(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const target = framesRef.current.get(lid)?.get(fid);
+    if (!target) {
+      setActiveMenu(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const img = new Image();
       img.onload = () => {
+        const ctx = target.getContext('2d');
+        if (!ctx) return;
         const { w, h } = canvasSizeRef.current;
-        const id = uid();
-        const frameMap = new Map<string, HTMLCanvasElement>();
-        for (const fid of frameOrderRef.current) {
-          const c = createEmptyCanvas(w, h);
-          if (fid === frameOrderRef.current[0]) {
-            const ctx = c.getContext('2d')!;
-            const sx = w / img.width, sy = h / img.height;
-            const scale = Math.min(sx, sy);
-            const dw = img.width * scale, dh = img.height * scale;
-            ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
-          }
-          frameMap.set(fid, c);
-        }
-        framesRef.current.set(id, frameMap);
-        layersRef.current.push({ id, name: 'Imported', visible: true, locked: false });
-        setActiveLayerId(id);
-        activeLayerIdRef.current = id;
-        bumpLayers(); renderComposite(); bumpThumbs(); bumpTimeline();
+
+        // Снимок «до» — для Undo/Redo.
+        const before = snapshot(lid, fid);
+
+        // Вписываем фото в canvas с сохранением пропорций, по центру.
+        const sx = w / img.width;
+        const sy = h / img.height;
+        const scale = Math.min(sx, sy);
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+
+        // Снимок «после» — для Undo/Redo.
+        const after = snapshot(lid, fid);
+        if (before && after) pushHistory(lid, fid, before, after, 'Import image');
+
+        renderComposite();
+        bumpThumbs(); bumpTimeline();
       };
       img.src = event.target?.result as string;
     };
     reader.readAsDataURL(file);
+
     setActiveMenu(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [
-    canvasSizeRef, frameOrderRef, framesRef, layersRef,
-    setActiveLayerId, activeLayerIdRef,
-    bumpLayers, renderComposite, bumpThumbs, bumpTimeline,
+    activeLayerIdRef, frameOrderRef, framesRef, findLayer,
+    canvasSizeRef, snapshot, pushHistory,
+    renderComposite, bumpThumbs, bumpTimeline,
     setActiveMenu, fileInputRef,
   ]);
 
